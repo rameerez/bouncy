@@ -27,9 +27,9 @@ class CreateBouncyTables < ActiveRecord::Migration<%= migration_version %>
       t.public_send(json_column_type, :details, **json_column_options({}))
       t.timestamps
     end
-    add_index :bouncy_suppressions, [:scope, :email], unique: true
-    add_index :bouncy_suppressions, [:scope, :blocked_at]
-    add_index :bouncy_suppressions, [:scope, :reason]
+    add_index :bouncy_suppressions, [ :scope, :email ], unique: true
+    add_index :bouncy_suppressions, [ :scope, :blocked_at ]
+    add_index :bouncy_suppressions, [ :scope, :reason ]
 
     create_table :bouncy_events, **primary_key_options(primary_key_type) do |t|
       t.string :scope, null: false, limit: 191, **identity_column_options
@@ -49,8 +49,8 @@ class CreateBouncyTables < ActiveRecord::Migration<%= migration_version %>
       t.datetime :created_at, null: false
     end
     add_index :bouncy_events, :dedupe_key, unique: true
-    add_index :bouncy_events, [:scope, :email, :occurred_at]
-    add_index :bouncy_events, [:scope, :kind, :created_at]
+    add_index :bouncy_events, [ :scope, :email, :occurred_at ]
+    add_index :bouncy_events, [ :scope, :kind, :created_at ]
     add_index :bouncy_events, :created_at
   end
 
@@ -61,7 +61,7 @@ class CreateBouncyTables < ActiveRecord::Migration<%= migration_version %>
   def primary_and_foreign_key_types
     config = Rails.configuration.generators
     setting = config.options.fetch(config.orm, {})[:primary_key_type]
-    [setting || :primary_key, setting || :bigint]
+    [ setting || :primary_key, setting || :bigint ]
   end
 
   def primary_key_options(type)
