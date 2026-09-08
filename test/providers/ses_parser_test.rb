@@ -51,6 +51,24 @@ class SesParserTest < BouncyTest
     assert_equal "mail-id", event.message_id
   end
 
+  test "suppression complaint subtypes are diagnostics rather than new complaints" do
+    { "OnAccountSuppressionList" => "provider_suppressed", "OnTenantSuppressionList" => "unknown", "FutureSubtype" => "unknown" }.each do |subtype, kind|
+      %w[notificationType eventType].each do |dialect|
+        event = parse(dialect => "Complaint", "complaint" => {
+                        "complaintSubType" => subtype, "complaintFeedbackType" => "abuse",
+                        "feedbackId" => "#{dialect}-#{subtype}", "complainedRecipients" => [{ "emailAddress" => "ada@example.com" }]
+                      }).sole
+        assert_equal kind, event.kind
+        assert_equal subtype, event.provider_reason
+        refute event.details.key?("certainty")
+        Bouncy::Ingestor.new.call(event)
+        refute Bouncy.blocked?("ada@example.com")
+      end
+    end
+    assert_empty Bouncy.events.where(kind: "complaint")
+    assert_equal 6, Bouncy.events.count
+  end
+
   test "delays and message errors are harmless records" do
     event = parse("eventType" => "DeliveryDelay", "deliveryDelay" => { "delayedRecipients" => [{ "emailAddress" => "a@example.com" }] }).first
     assert_equal "delay", event.kind

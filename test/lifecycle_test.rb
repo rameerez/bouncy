@@ -185,6 +185,54 @@ class LifecycleTest < BouncyTest
 end
 
 class SyncIdempotencyTest < BouncyTest
+  test "changed provider timestamps persist without restriction events or hooks" do
+    @provider.entries = [entry(time: 2.days.ago)]
+    Bouncy.sync!
+    version = Bouncy::Suppression.sole.lock_version
+    events = Bouncy.events.where.not(kind: "sync").count
+    hooks = []
+    Bouncy.configuration.after_event = ->(event) { hooks << event.kind }
+    timestamp = 1.day.ago.change(usec: 0)
+    @provider.entries = [entry(time: timestamp)]
+    Bouncy.sync!
+    assert_equal timestamp, Bouncy.status("ada@example.com").provider_updated_at
+    assert_operator Bouncy::Suppression.sole.lock_version, :>, version
+    assert_equal events, Bouncy.events.where.not(kind: "sync").count
+    assert_equal ["sync"], hooks
+    version = Bouncy::Suppression.sole.lock_version
+    Bouncy.sync!
+    assert_equal version, Bouncy::Suppression.sole.lock_version
+  end
+
+  test "partial snapshots refresh evidence while preserving missing variants and newer observations" do
+    @provider.entries = [entry(time: 3.days.ago), entry("ADA@example.com", reason: :complaint)]
+    Bouncy.sync!
+    @provider.complete = false
+    timestamp = 1.day.ago.change(usec: 0)
+    @provider.entries = [entry(time: timestamp)]
+    Bouncy.sync!
+    row = Bouncy::Suppression.sole
+    assert_equal 2, row.provider_entries.size
+    assert_equal timestamp.iso8601(6), row.provider_entries.find { |item| item["email"] == "Ada@Example.com" }["provider_updated_at"]
+    assert_equal :complaint, row.reason.to_sym
+    @provider.entries = [entry(time: 2.days.ago)]
+    Bouncy.sync!
+    assert_equal row.provider_entries, row.reload.provider_entries
+    assert_empty Bouncy.events.where(kind: "sync_updated")
+  end
+
+  test "new provider evidence during recovery prevents clearing local state" do
+    @provider.entries = [entry(time: 2.days.ago)]
+    Bouncy.sync!
+    @provider.on_release = lambda {
+      @provider.entries = [entry(time: Time.current)]
+      Bouncy.sync!
+    }
+    assert_raises(Bouncy::ReleaseConflict) { Bouncy.release!("ada@example.com", note: "Recovery") }
+    assert Bouncy.blocked?("ada@example.com")
+    assert_equal "release_failed", Bouncy.events.last.kind
+  end
+
   test "repeated identical snapshots write no events, fire no hooks and bump no versions" do
     @provider.entries = [entry, entry("Bob@Example.com", reason: :complaint)]
     Bouncy.sync!
@@ -195,6 +243,7 @@ class SyncIdempotencyTest < BouncyTest
     hooks = 0
     Bouncy.configuration.after_event = ->(_event) { hooks += 1 }
     travel 10.minutes
+    @provider.entries.reverse! # Provider pagination order is not a change in evidence.
     3.times { Bouncy.sync! }
     assert_equal events + 3, Bouncy.events.count, "only the three sync summaries were recorded"
     assert_equal 3, hooks
@@ -266,7 +315,77 @@ class SyncIdempotencyTest < BouncyTest
     status = Bouncy.status("ada@example.com")
     assert status.provider_listed?
     assert status.policy_unverified?
+    assert_equal "listed sending paths are incomplete", status.policy_reason
     refute status.blocked?
     assert_equal :observed, status.knowledge
+  end
+
+  test "status follows policy verification loss and recovery without erasing restriction history" do
+    @provider.entries = [entry]
+    Bouncy.sync!
+    evidence = Bouncy::Suppression.sole.provider_entries
+    blocked_at = Bouncy::Suppression.sole.provider_blocked_at
+    refute Bouncy.status("ada@example.com").policy_unverified?
+    assert_nil Bouncy.status("ada@example.com").policy_reason
+    travel 1.second
+    @provider.policy_verified = false
+    @provider.policy_reason = "listed sending paths are incomplete"
+    @provider.entries = [] # Policy applies even to rows absent from an unverified snapshot.
+    Bouncy.sync!
+    status = Bouncy.status("ada@example.com")
+    assert status.policy_unverified?
+    assert_equal @provider.policy_reason, status.policy_reason
+    assert status.blocked?, "historical restriction evidence remains queryable"
+    assert_equal evidence, Bouncy::Suppression.sole.provider_entries
+    assert_equal blocked_at, Bouncy::Suppression.sole.provider_blocked_at
+    Bouncy.configuration.interception = :drop
+    message = Mail.new(to: "ada@example.com", from: "sender@example.com", body: "test")
+    Bouncy::Interceptor.delivering_email(message)
+    assert message.perform_deliveries
+    assert_equal ["ada@example.com"], message.smtp_envelope_to
+    travel 1.second
+    @provider.entries = [entry]
+    @provider.policy_verified = true
+    @provider.policy_reason = nil
+    Bouncy.sync!
+    refute Bouncy.status("ada@example.com").policy_unverified?
+    assert_nil Bouncy.status("ada@example.com").policy_reason
+    Bouncy::Interceptor.delivering_email(message)
+    refute message.perform_deliveries
+  end
+
+  test "status treats failed or missing policy checks as unknown and respects scope" do
+    @provider.entries = [entry]
+    Bouncy.sync!
+    original_scope = Bouncy.scope
+    Bouncy.configuration.scope = "ses:999999999999:us-east-1:account"
+    @provider.policy_verified = false
+    Bouncy.sync!
+    Bouncy.configuration.scope = original_scope
+    refute Bouncy.status("ada@example.com").policy_unverified?
+    travel 1.second
+    @provider.stub(:snapshot, -> { raise Bouncy::ProviderError, "offline" }) do
+      assert_raises(Bouncy::ProviderError) { Bouncy.sync! }
+    end
+    assert Bouncy.status("ada@example.com").policy_unverified?
+    assert_equal "Sending policy could not be verified", Bouncy.status("ada@example.com").policy_reason
+    Bouncy.events.delete_all
+    assert Bouncy.status("ada@example.com").policy_unverified?
+    assert_equal "Sending policy has not been checked", Bouncy.status("ada@example.com").policy_reason
+    assert_nil Bouncy.status("nobody@example.com").policy_reason
+  end
+
+  test "policy status handles read outages without concealing SQL bugs" do
+    @provider.entries = [entry]
+    Bouncy.sync!
+    status = Bouncy.status("ada@example.com")
+    Bouncy::Event.stub(:where, ->(*) { raise ActiveRecord::ConnectionNotEstablished }) do
+      assert status.policy_unverified?
+      assert_match(/database could not be reached/, status.policy_reason)
+    end
+    status = Bouncy.status("ada@example.com")
+    Bouncy::Event.stub(:where, ->(*) { raise ActiveRecord::StatementInvalid, "bad SQL" }) do
+      assert_raises(ActiveRecord::StatementInvalid) { status.policy_unverified? }
+    end
   end
 end

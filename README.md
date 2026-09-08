@@ -45,7 +45,7 @@ Initial support: **Amazon SES, including SES SMTP**, one account and region, Pos
 - Releases exact provider address variants before clearing local evidence. Manual holds remain independent.
 - Reconciles provider changes, retains release ordering information and reports incomplete or stale observations.
 
-Soft bounces are recorded without blocking an address. A complaint blocks locally only when SES names exactly one recipient; a complaint that lists several possible recipients is recorded as candidates and enforced once the provider lists the address at the next sync. Delivery means the receiving server accepted a message; it does not prove inbox placement or reading.
+Soft bounces are recorded without blocking an address. An ordinary complaint blocks locally only when SES names exactly one recipient; a complaint that lists several possible recipients is recorded as candidates and enforced once the provider lists the address at the next sync. Suppression-list refusal notices are recorded separately and never become new complaint blocks. Delivery means the receiving server accepted a message; it does not prove inbox placement or reading.
 
 ## Installation
 
@@ -89,7 +89,7 @@ Deploy the receiver with its allowlist before subscribing the topic. Follow the 
 
 Until `config.scope` is set, Bouncy is inactive: mail is delivered untouched, every address reads as unrestricted, relations are empty, and one warning is logged. Sync, block and release raise `Bouncy::ConfigurationError`. That lets you add the gem before its environment variables exist without breaking mailer tests.
 
-Imported provider restrictions are enforced only once `bin/rails bouncy:doctor` reports `policy_verified: true`. Before that, sync runs in observation mode: the list is mirrored, nothing is blocked, and `policy_reason` says why (for example, the account list does not cover complaints, a configuration set overrides it, or `all_sending_paths_listed` is still false). Webhook events are enforced either way. A repeated sync that changes nothing writes no events and fires no hooks.
+Run `bin/rails bouncy:doctor` to check the sending policy, then sync to import restrictions. An unverified policy leaves new imports in observation mode; `policy_reason` explains why. If verification later fails, historical restrictions remain queryable, but the interceptor stops dropping recipients based on provider or webhook evidence until a fresh, complete, verified sync succeeds. Independent manual holds still apply. Every sync records a summary; unchanged addresses create no additional events or hooks.
 
 SMTP credentials are not AWS API credentials. The optional SDKs use the usual AWS credential chain or injected clients. Requiring the gem does not query your database or call AWS.
 
@@ -101,7 +101,8 @@ status.blocked?
 status.reasons       # All effective reasons, including an independent manual hold
 status.knowledge     # :observed, :no_known_block, :unavailable, :unconfigured
 status.provider_listed?   # the provider lists this address in the configured scope
-status.policy_unverified? # listed but not enforced until the sending policy check passes
+status.policy_unverified? # listed, but the latest sync did not verify the sending policy
+status.policy_reason      # why verification failed or is unknown; nil when verified or unlisted
 status.stale?
 status.observed_at
 status.last_event
@@ -111,6 +112,8 @@ Bouncy.events.for("ada@example.com").recent
 ```
 
 `blocked?` asks about known local restrictions. An unknown address is not certified deliverable. Recognized database outages return `false` from the boolean API and `:unavailable` from the richer status API. Programming errors still raise.
+
+Policy diagnostics use the latest sync in the address's scope, including failed checks. They do not erase historical evidence or replace the freshness check: `blocked?` can remain true while the interceptor lets mail through because verification failed or the sync is stale. Obtain a new status object after a sync to refresh its observations.
 
 Model scopes expect the stored column to use Bouncy's trimmed lowercase comparison. For mixed-case display values, supply a persisted normalized column:
 

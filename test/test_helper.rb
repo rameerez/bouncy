@@ -51,7 +51,7 @@ ActiveRecord::Schema.define do
 end
 
 class FakeProvider < Bouncy::Providers::Base
-  attr_accessor :entries, :complete, :policy_verified, :on_snapshot, :on_release, :scope
+  attr_accessor :entries, :complete, :policy_verified, :policy_reason, :on_snapshot, :on_release, :scope
   attr_reader :deleted, :lookups
 
   def initialize
@@ -67,7 +67,8 @@ class FakeProvider < Bouncy::Providers::Base
     copy = entries.dup
     on_snapshot&.call
     Bouncy::Providers::Snapshot.new(entries: copy, scope: scope || Bouncy.scope, complete: complete,
-                                    policy_verified: policy_verified, started_at: started_at, finished_at: Time.current)
+                                    policy_verified: policy_verified, policy_reason: policy_reason,
+                                    started_at: started_at, finished_at: Time.current)
   end
 
   def lookup(email)

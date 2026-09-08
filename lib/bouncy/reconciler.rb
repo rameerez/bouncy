@@ -5,8 +5,9 @@ module Bouncy
   #
   # Idempotency contract: a snapshot that changes nothing about an address writes no
   # event, fires no hook and does not bump the row's lock version. Only the observation
-  # time (provider_checked_at) is refreshed. Rows with neither provider evidence nor a
-  # webhook-derived block are never looked up at the provider.
+  # time (provider_checked_at) is refreshed. Changed provider metadata advances the
+  # version to fence concurrent recovery, without a restriction event. Rows with neither
+  # provider evidence nor a webhook-derived block are never looked up at the provider.
   class Reconciler
     def initialize(adapter)
       @adapter = adapter
@@ -64,7 +65,9 @@ module Bouncy
         next :skipped if current.empty?
 
         merged = (snapshot.complete ? retained + current.map(&:to_h) : row.provider_entries + current.map(&:to_h))
-        merged = merged.uniq { |entry| entry["email"] }
+        merged = merged.group_by { |entry| entry["email"] }.values.map do |variants|
+          variants.max_by { |entry| Time.iso8601(entry.fetch("provider_updated_at")) }
+        end
         was_blocked = row.blocked?
         before = restriction_of(row)
         row.provider_entries = merged
@@ -75,8 +78,12 @@ module Bouncy
         end
         row.details = row.details.except("absence_count")
         if before == restriction_of(row)
-          # Same identifiers, same reason, same enforcement: refresh the observation time only.
-          row.update_columns(provider_checked_at: snapshot.finished_at)
+          # New evidence must fence a concurrent recovery even when the restriction is unchanged.
+          if row.provider_entries_was.sort_by { |entry| entry["email"] } == merged.sort_by { |entry| entry["email"] }
+            row.update_columns(provider_checked_at: snapshot.finished_at)
+          else
+            row.save!
+          end
           next :unchanged
         end
 

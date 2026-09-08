@@ -26,7 +26,7 @@ Release never resends the original email. Regenerate time-sensitive links in an 
 ## Nothing is appearing locally
 
 - Check the configured account, region, credentials and exact SNS topic allowlist.
-- Run `bouncy:doctor`. An unknown/manual publisher-policy check is not a pass. If `policy_verified` is false, read `policy_reason`: until it passes, sync mirrors the provider list without enforcing it, and `Bouncy.status(address).policy_unverified?` is true for listed addresses.
+- Run `bouncy:doctor`, then sync. An unknown/manual publisher-policy check is not a pass. If the latest sync did not verify policy, `Bouncy.status(address).policy_unverified?` is true for listed addresses and `policy_reason` explains why. Historical restrictions remain queryable while provider-derived interception is suspended.
 - If `Bouncy.status(address).knowledge` is `:unconfigured`, `config.scope` is blank and Bouncy is inactive in that environment.
 - Confirm the SNS HTTPS subscription is active and points at the actual mounted route.
 - Confirm SES routes the needed event types to that topic, and raw SNS message delivery is disabled.

@@ -31,12 +31,23 @@ module Bouncy
     # The provider lists this address in the configured scope.
     def provider_listed? = @row ? @row.provider_entries.any? : false
 
-    # Listed by the provider but not enforced locally because the sending policy has not been
-    # verified (see config.ses.all_sending_paths_listed and `bouncy:doctor`).
-    def policy_unverified? = provider_listed? && @row.provider_blocked_at.nil?
+    # Current scoped verification is separate from retained restriction evidence.
+    def policy_unverified? = provider_listed? && policy_details["policy_verified"] != true
+    def policy_reason = policy_unverified? ? (policy_details["policy_reason"] || "Sending policy could not be verified") : nil
 
     def stale?
       %i[unavailable unconfigured].include?(knowledge) || observed_at.nil? || observed_at < Bouncy.configuration.stale_after.ago
+    end
+
+    private
+
+    def policy_details
+      @policy_details ||= Event.where(scope: scope, kind: "sync").order(created_at: :desc, id: :desc).pick(:details) ||
+                          { "policy_reason" => "Sending policy has not been checked" }
+    rescue ActiveRecord::ActiveRecordError => e
+      raise unless Bouncy.database_unavailable?(e)
+
+      @policy_details = { "policy_reason" => "Sending policy is unavailable because the database could not be reached" }
     end
   end
 end
