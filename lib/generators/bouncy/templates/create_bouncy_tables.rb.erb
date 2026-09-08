@@ -1,0 +1,98 @@
+# frozen_string_literal: true
+
+class CreateBouncyTables < ActiveRecord::Migration<%= migration_version %>
+  def change
+    primary_key_type, = primary_and_foreign_key_types
+
+    create_table :bouncy_suppressions, **primary_key_options(primary_key_type) do |t|
+      t.string :scope, null: false, limit: 191, **identity_column_options
+      t.string :email, null: false, limit: 254, **identity_column_options
+      t.string :provider, null: false
+      t.string :reason
+      t.datetime :blocked_at
+      t.datetime :manual_blocked_at
+      t.text :manual_note
+      t.public_send(json_column_type, :provider_entries, **json_column_options([]))
+      t.datetime :provider_blocked_at
+      t.string :provider_reason
+      t.datetime :event_blocked_at
+      t.string :event_reason
+      t.datetime :last_event_at
+      t.datetime :provider_checked_at
+      t.datetime :released_before
+      t.integer :soft_bounce_count, null: false, default: 0
+      t.datetime :last_soft_bounce_at
+      t.datetime :soft_blocked_until
+      t.integer :lock_version, null: false, default: 0
+      t.public_send(json_column_type, :details, **json_column_options({}))
+      t.timestamps
+    end
+    add_index :bouncy_suppressions, [:scope, :email], unique: true
+    add_index :bouncy_suppressions, [:scope, :blocked_at]
+    add_index :bouncy_suppressions, [:scope, :reason]
+
+    create_table :bouncy_events, **primary_key_options(primary_key_type) do |t|
+      t.string :scope, null: false, limit: 191, **identity_column_options
+      t.string :email, limit: 254, **identity_column_options
+      t.string :kind, null: false
+      t.string :source, null: false
+      t.string :provider
+      t.string :provider_event_id
+      t.string :message_id
+      t.string :dedupe_key, limit: 64
+      t.datetime :occurred_at, null: false
+      t.datetime :received_at, null: false
+      t.string :provider_reason
+      t.string :status_code
+      t.text :diagnostic
+      t.public_send(json_column_type, :details, **json_column_options({}))
+      t.public_send(json_column_type, :payload)
+      t.datetime :created_at, null: false
+    end
+    add_index :bouncy_events, :dedupe_key, unique: true
+    add_index :bouncy_events, [:scope, :email, :occurred_at]
+    add_index :bouncy_events, [:scope, :kind, :created_at]
+    add_index :bouncy_events, :created_at
+  end
+
+  private
+
+  # Shared house convention: resolve the host key setting when migrating,
+  # not when generating, so one checked-in migration works in every environment.
+  def primary_and_foreign_key_types
+    config = Rails.configuration.generators
+    setting = config.options.fetch(config.orm, {})[:primary_key_type]
+    [setting || :primary_key, setting || :bigint]
+  end
+
+  def primary_key_options(type)
+    # PostgreSQL generates native UUIDs. Other adapters store application-generated
+    # UUID strings; Bouncy::Record supplies them without adapter queries at boot.
+    return { id: :string, limit: 36 } if type.to_s == "uuid" && !postgresql?
+
+    { id: type }
+  end
+
+  def json_column_type
+    postgresql? ? :jsonb : :json
+  end
+
+  def json_column_options(default)
+    # Avoid literal JSON defaults on MySQL. Models supply fresh Ruby defaults.
+    # This also works on versions that require an expression for JSON defaults.
+    mysql? ? { null: false } : { null: false, default: default }
+  end
+
+  def identity_column_options
+    # A case/accent-insensitive MySQL collation would broaden our canonical key.
+    mysql? ? { collation: "utf8mb4_bin" } : {}
+  end
+
+  def postgresql?
+    connection.adapter_name.downcase.include?("postgres")
+  end
+
+  def mysql?
+    connection.adapter_name.downcase.match?(/mysql|trilogy/)
+  end
+end

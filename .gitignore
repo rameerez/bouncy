@@ -1,0 +1,39 @@
+/.bundle/
+/.yardoc/
+/_yardoc/
+/coverage/
+/doc/
+/pkg/
+/tmp/
+/dist/
+/log/
+
+# For gems, ignore all lockfiles (root and appraisal) to allow flexible dependency resolution
+Gemfile.lock
+gemfiles/*.lock
+
+test/dummy/db/*.sqlite3*
+test/dummy/log/*
+test/dummy/tmp/
+test/dummy/storage/*.sqlite3*
+test/dummy/config/master.key
+test/coverage/*
+*.gem
+*.log
+.DS_Store
+
+# The product research corpus and the PRD are deliberately local-only. Never publish.
+/docs/
+PRD.md
+
+# Local agent/editor config
+/AGENTS.md
+/CLAUDE.md
+/ONBOARDING.md
+/PROGRESS.md
+/IMPLEMENTATION*.md
+/HANDOFF*.md
+.cursor/
+.claude/
+.aux/
+TODO

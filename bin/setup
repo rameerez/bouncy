@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "fileutils"
+
+FileUtils.chdir File.expand_path("..", __dir__) do
+  system("bundle", "install", exception: true)
+end

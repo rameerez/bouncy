@@ -1,0 +1,15 @@
+# Migrating an existing suppression table
+
+Migration and cutover belong in the implementing app. Bouncy's install migration creates its own two tables; it does not inspect application models or silently replace an existing webhook/interceptor.
+
+1. Inventory every existing writer: webhook controllers, jobs, support actions, interceptors and console operations. Record the source account, region, reason mapping, timestamps and existing soft-hold policy.
+2. Install the additive schema. Write a host data migration using migration-local ActiveRecord classes or explicit SQL pinned to that schema. Never call live Bouncy/host models, callbacks, jobs or AWS from a historical migration.
+3. Preserve manual holds independently. Map complaints as complaints and hard bounces as hard bounces. Account-list refusal is evidence of an existing restriction. Soft trackers are history; active legacy soft holds require an explicit preserved policy, not an accidental new threshold engine.
+4. Use stable source IDs to make imported events idempotent. Preserve distinct occurrences, exact provider addresses when available, and relevant event times. Missing historical case variants are resolved by complete provider enumeration before recovery.
+5. Rehearse the import against isolated synthetic fixtures, then bootstrap the provider mirror through the runtime sync service. Compare every predicate, support action and customer-facing status that depended on the old table.
+6. Quiesce old writers for cutover, or implement and test dual-write delivery with deterministic identity. Do not replace readers while another process continues writing exclusively to the old table.
+7. Rehearse rollback, including restrictions and releases created after cutover. Keeping an old table is not a rollback plan if it missed later changes. Keep old schema until the agreed window ends.
+
+Use the app's existing public webhook URL where possible. Test routing alongside unrelated webhooks, and preserve the existing interception mode deliberately. Host admin resources call Bouncy's recovery API; stock row deletion cannot stand in for provider release.
+
+The development gem has automated schema and lifecycle coverage. An actual application data migration/cutover/rollback rehearsal remains an integration requirement; this guide does not claim one has occurred.

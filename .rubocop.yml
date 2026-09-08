@@ -1,0 +1,19 @@
+AllCops:
+  NewCops: enable
+  TargetRubyVersion: 3.3
+  Exclude:
+    - 'gemfiles/**/*'
+    - 'lib/generators/**/templates/**/*'
+    - 'vendor/**/*'
+    - 'tmp/**/*'
+    - 'docs/**/*'
+    - 'coverage/**/*'
+    - '.cursor/**/*'
+Metrics:
+  Enabled: false
+Style/Documentation:
+  Enabled: false
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+Layout/LineLength:
+  Max: 160
