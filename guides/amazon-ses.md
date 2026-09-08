@@ -28,6 +28,22 @@ Runtime reads use `ses:ListSuppressedDestinations`, `ses:GetSuppressedDestinatio
 
 Inject SDK clients through `config.ses.client`, `sns_client`, and `sts_client` if needed. Keep account and region consistent. Default clients use bounded connection/read timeouts and retries. Never print credentials in setup output.
 
+## Testing your mounted receiver
+
+A host test that posts to the mounted route would otherwise download Amazon's signing certificate over the network. `config.ses.sns_message_verifier` replaces that one object, and nothing else:
+
+```ruby
+class LocalCertificate < Aws::SNS::MessageVerifier
+  private
+
+  def https_get(*) = OpenSSL::X509::Certificate.new(File.read("test/fixtures/sns.pem")).to_pem
+end
+
+Bouncy.configuration.ses.sns_message_verifier = LocalCertificate.new
+```
+
+Topic authorization, the certificate-URL check and the real RSA signature check all still run against your configured allowlist and region, so this seam cannot hide a receiver that would accept a foreign topic in production. Sign fixtures with a locally generated key and assert that a valid signature on an unlisted `TopicArn` is rejected.
+
 ## Failure and ordering
 
 The webhook commits each recipient's event and address transition before acknowledging. Retries deduplicate independently. Authentication failure returns 401, malformed input 400, oversized bodies 413 and recognized transient provider/database failures 503.

@@ -14,4 +14,6 @@
 
 - Optional soft-bounce escalation: `config.soft_bounce_threshold`, `config.soft_bounce_window` and `config.soft_bounce_block_for` turn repeated soft bounces into a local hold. Default stays record-only. Occurrence times are retained and bounded so the window rolls, and recovery clears them. Found while migrating a host application that had its own threshold; the schema anticipated this but nothing wrote the columns.
 
+- `config.ses.sns_message_verifier` injects the SNS certificate verifier so a host can test its mounted receiver offline. Topic authorization, certificate-URL checks and the real signature check still run, so the seam cannot hide a receiver that would accept a foreign topic.
+
 This is an unpublished development release. See the README for supported boundaries and remaining release validation.

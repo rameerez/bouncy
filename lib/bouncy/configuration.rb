@@ -3,7 +3,11 @@
 module Bouncy
   class Configuration
     class Ses
-      attr_accessor :region, :topic_arns, :client, :sns_client, :sts_client,
+      # sns_message_verifier replaces ONLY the Aws::SNS::MessageVerifier that downloads and
+      # caches Amazon's signing certificate, so a host can test its mounted receiver offline.
+      # Topic authorization and certificate-URL checks still run, which is the point: a test
+      # seam that skipped them would hide exactly the hole they exist to close.
+      attr_accessor :region, :topic_arns, :client, :sns_client, :sts_client, :sns_message_verifier,
                     :identities, :configuration_sets, :all_sending_paths_listed
 
       def initialize
