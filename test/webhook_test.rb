@@ -120,6 +120,21 @@ class WebhookTest < BouncyTest
     end
   end
 
+  test "a complaint naming one recipient blocks locally while several recipients stay candidates" do
+    complaint = lambda do |recipients|
+      JSON.generate("notificationType" => "Complaint", "complaint" => {
+                      "feedbackId" => "complaint-#{recipients.size}", "timestamp" => Time.current.iso8601,
+                      "complainedRecipients" => recipients.map { |email| { "emailAddress" => email } }
+                    })
+    end
+    assert_equal 200, post(signed_envelope("Message" => complaint.call(%w[ada@example.com ben@example.com]), "MessageId" => "m-2"))
+    refute Bouncy.blocked?("ada@example.com")
+    assert_equal 200, post(signed_envelope("Message" => complaint.call(%w[ada@example.com]), "MessageId" => "m-1"))
+    assert Bouncy.blocked?("ada@example.com")
+    assert_equal :complaint, Bouncy.status("ada@example.com").reason
+    refute Bouncy.blocked?("ben@example.com")
+  end
+
   test "SDK Lambda alias cannot substitute an unchecked certificate URL" do
     assert_equal 400, post(signed_envelope("SigningCertUrl" => "https://sns.eu-west-1.amazonaws.com/unchecked.pem"))
     assert_not_requested :get, CERT_URL

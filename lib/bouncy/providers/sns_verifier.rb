@@ -11,11 +11,12 @@ module Bouncy
         private
 
         def pem(uri)
+          @cached_pems ||= {}
           @cached_pems.shift if @cached_pems.size >= 32 && !@cached_pems.key?(uri.to_s)
           super
         end
 
-        def https_get(uri)
+        def https_get(uri, _failed_attempts = 0)
           body = +""
           Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 3, read_timeout: 5,
                                               verify_mode: OpenSSL::SSL::VERIFY_PEER, max_retries: 0) do |http|
@@ -34,8 +35,17 @@ module Bouncy
         end
       end
 
+      # The bounded verifier overrides two private SDK methods. Refuse to run against an SDK that
+      # no longer has them rather than silently fetching certificates without limits.
+      HOOKS = %i[pem https_get].freeze
+
       def initialize(configuration)
         @configuration = configuration
+        unless HOOKS.all? { |hook| Aws::SNS::MessageVerifier.private_method_defined?(hook) }
+          raise ConfigurationError, "aws-sdk-sns #{Aws::SNS::GEM_VERSION} changed its certificate download internals; " \
+                                    "pin aws-sdk-sns to a release tested with this version of bouncy"
+        end
+
         @verifier = BoundedVerifier.new
         @mutex = Mutex.new
       end

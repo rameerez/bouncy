@@ -42,14 +42,16 @@ module Bouncy
           raw_email = recipient.is_a?(Hash) ? recipient["emailAddress"] : recipient
           email = normalize(raw_email)
           kind, classification = classify(type, data)
-          details = { "exact_email" => raw_email.to_s.truncate(254), "timestamp_fallback" => fallback,
-                      "certainty" => "candidate", "classification" => classification }
+          details = { "exact_email" => raw_email.to_s.truncate(254), "timestamp_fallback" => fallback, "classification" => classification }
+          # SES lists every recipient of the message when the mailbox provider redacts the
+          # complainer; a single named recipient is the complainer. Only that case blocks locally.
+          details["certainty"] = recipients.size == 1 ? "confirmed" : "candidate" if kind == "complaint"
           details["invalid_recipient"] = true if raw_email && !email
           recipientless_kind = %w[reject rendering_failure ignored].include?(kind) && raw_email.nil?
           Observation.new(email: email, kind: email || recipientless_kind ? kind : "ignored",
                           provider_event_id: bounded(data["feedbackId"] || envelope.fetch("MessageId"), 255),
                           message_id: bounded(mail["messageId"], 255), occurred_at: time, details: details,
-                          provider_reason: bounded(data["bounceSubType"] || data["complaintFeedbackType"], 255),
+                          provider_reason: bounded(data["bounceSubType"] || data["complaintSubType"] || data["complaintFeedbackType"], 255),
                           status_code: recipient.is_a?(Hash) ? bounded(recipient["status"], 255) : nil,
                           diagnostic: recipient.is_a?(Hash) ? bounded(recipient["diagnosticCode"], 1000) : nil)
         end
@@ -92,7 +94,11 @@ module Bouncy
             end
           end
         when "Complaint"
-          data["complaintFeedbackType"] == "not-spam" ? %w[ignored not_spam] : %w[complaint candidate]
+          case data["complaintSubType"]
+          when "OnAccountSuppressionList" then %w[provider_suppressed account]
+          when nil then data["complaintFeedbackType"] == "not-spam" ? %w[ignored not_spam] : %w[complaint candidate]
+          else ["unknown", data["complaintSubType"]]
+          end
         when "Delivery" then %w[delivery server_accepted]
         when "DeliveryDelay" then %w[delay retrying]
         when "Reject" then %w[reject message]

@@ -4,6 +4,7 @@ module Bouncy
   class Interceptor
     def self.delivering_email(message)
       return if Bouncy.configuration.interception == :off || ActiveSupport::IsolatedExecutionState[:bouncy_unblocked]
+      return Bouncy.unconfigured!("interception") unless Bouncy.configured?
 
       new.call(message)
     end
@@ -15,24 +16,27 @@ module Bouncy
       rows = Bouncy.blocked.where(email: keys).to_a
       return if rows.empty?
 
-      drop = Bouncy.configuration.interception == :drop
-      if drop
-        health = Bouncy.last_sync
-        fresh = health && health.details["complete"] && health.created_at >= Bouncy.configuration.stale_after.ago
-        rows.select! { |row| fresh || row.manual_blocked_at || (row.soft_blocked_until && row.soft_blocked_until > Time.current) }
-      end
-      blocked = rows.map(&:email)
+      mode = Bouncy.configuration.interception
+      # Provider-derived evidence is only enforced while a complete sync is fresh. Manual holds
+      # and legacy soft holds are local policy and do not depend on provider freshness. The same
+      # rule applies in :log mode so that its preview matches what :drop would do.
+      health = Bouncy.last_sync
+      fresh = health && health.details["complete"] && health.created_at >= Bouncy.configuration.stale_after.ago
+      enforceable = rows.select { |row| fresh || row.manual_blocked_at || (row.soft_blocked_until && row.soft_blocked_until > Time.current) }
+      blocked = enforceable.map(&:email)
       remaining = envelope.reject { |email| blocked.include?(normalize(email)) }
       changed_headers = headers.transform_values { |values| values.reject { |email| blocked.include?(normalize(email)) } }
       # Persist all skip evidence before changing the message. A DB outage must leave it intact.
       Event.transaction do
         rows.each do |row|
+          would_drop = enforceable.include?(row)
           Store.event!("skipped", email: row.email, source: "interceptor", details: {
-                         "mode" => Bouncy.configuration.interception.to_s, "reasons" => row.reasons.map(&:to_s), "would_drop" => !drop
+                         "mode" => mode.to_s, "reasons" => row.reasons.map(&:to_s), "would_drop" => would_drop,
+                         "dropped" => mode == :drop && would_drop, "stale_provider_evidence" => !would_drop
                        })
         end
       end
-      return unless drop && blocked.any?
+      return unless mode == :drop && blocked.any?
 
       changed_headers.each { |field, values| message.public_send("#{field}=", values.empty? ? nil : values) }
       message.smtp_envelope_to = remaining

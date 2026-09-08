@@ -12,7 +12,7 @@ No User record is needed. Optional `bouncy :email` model integration adds predic
 
 Start with [SES setup](amazon-ses.md). Both SES SMTP and Action Mailer SDK delivery can use the same management API mirror. API credentials are separate from SMTP credentials. Import historical restrictions before enabling delivery interception.
 
-Webhooks handle new events promptly; recurring full sync covers prior history, shared-account changes, missed notifications and console releases. Neither mechanism proves every mailbox is reachable. Soft bounces are record-only, complaints retain uncertainty, and message-size failures never globally invalidate an address.
+Webhooks handle new events promptly; recurring full sync covers prior history, shared-account changes, missed notifications and console releases. Neither mechanism proves every mailbox is reachable. Soft bounces are record-only, an ordinary complaint blocks locally only when it names a single recipient, and message-size failures never globally invalidate an address. Suppression-list refusal notices are recorded separately from new complaints.
 
 For the support workflow, see [admin integration](admin.md) and [recovery](recovery.md). For someone who says the email never arrived, follow [troubleshooting](troubleshooting.md) rather than assuming suppression is always the cause.
 

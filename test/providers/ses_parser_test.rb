@@ -30,6 +30,10 @@ class SesParserTest < BouncyTest
                                                                                                   { "emailAddress" => "b@example.com" }] })
     assert_equal 2, events.size
     assert(events.all? { |event| event.kind == "complaint" && event.details["certainty"] == "candidate" })
+    single = parse("notificationType" => "Complaint", "complaint" => { "complainedRecipients" => [{ "emailAddress" => "a@example.com" }] }).first
+    assert_equal "confirmed", single.details["certainty"]
+    bounce = parse("eventType" => "Bounce", "bounce" => { "bounceType" => "Permanent", "bouncedRecipients" => ["a@example.com"] }).first
+    refute bounce.details.key?("certainty")
     event = parse("eventType" => "Complaint", "complaint" => { "complaintFeedbackType" => "not-spam",
                                                                "complainedRecipients" => ["a@example.com"] }).first
     assert_equal "ignored", event.kind
@@ -45,6 +49,24 @@ class SesParserTest < BouncyTest
     assert_equal "a@example.com", event.email
     refute event.details["timestamp_fallback"]
     assert_equal "mail-id", event.message_id
+  end
+
+  test "suppression complaint subtypes are diagnostics rather than new complaints" do
+    { "OnAccountSuppressionList" => "provider_suppressed", "OnTenantSuppressionList" => "unknown", "FutureSubtype" => "unknown" }.each do |subtype, kind|
+      %w[notificationType eventType].each do |dialect|
+        event = parse(dialect => "Complaint", "complaint" => {
+                        "complaintSubType" => subtype, "complaintFeedbackType" => "abuse",
+                        "feedbackId" => "#{dialect}-#{subtype}", "complainedRecipients" => [{ "emailAddress" => "ada@example.com" }]
+                      }).sole
+        assert_equal kind, event.kind
+        assert_equal subtype, event.provider_reason
+        refute event.details.key?("certainty")
+        Bouncy::Ingestor.new.call(event)
+        refute Bouncy.blocked?("ada@example.com")
+      end
+    end
+    assert_empty Bouncy.events.where(kind: "complaint")
+    assert_equal 6, Bouncy.events.count
   end
 
   test "delays and message errors are harmless records" do

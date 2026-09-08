@@ -46,7 +46,6 @@ class CreateBouncyTables < ActiveRecord::Migration<%= migration_version %>
       t.string :status_code
       t.text :diagnostic
       t.public_send(json_column_type, :details, **json_column_options({}))
-      t.public_send(json_column_type, :payload)
       t.datetime :created_at, null: false
     end
     add_index :bouncy_events, :dedupe_key, unique: true

@@ -16,7 +16,7 @@ class SesTest < BouncyTest
       config.ses.client = @ses
       config.ses.sts_client = @sts
       config.ses.sns_client = @sns
-      config.ses.account_policy_only = true
+      config.ses.all_sending_paths_listed = true
     end
     @sts.stub_responses(:get_caller_identity, account: "123456789012")
     @ses.stub_responses(:get_account, suppression_attributes: { suppressed_reasons: %w[BOUNCE COMPLAINT] })
@@ -90,20 +90,32 @@ class SesTest < BouncyTest
   end
 
   test "effective policy must cover both reasons and configured sending sets" do
-    Bouncy.configuration.ses.account_policy_only = false
-    refute @adapter.snapshot.policy_verified
-    Bouncy.configuration.ses.account_policy_only = true
+    Bouncy.configuration.ses.all_sending_paths_listed = false
+    snapshot = @adapter.snapshot
+    refute snapshot.policy_verified
+    assert_match(/all_sending_paths_listed is false/, snapshot.policy_reason)
+    Bouncy.configuration.ses.all_sending_paths_listed = true
     @ses.stub_responses(:get_account, suppression_attributes: { suppressed_reasons: ["BOUNCE"] })
-    refute @adapter.snapshot.policy_verified
+    snapshot = @adapter.snapshot
+    refute snapshot.policy_verified
+    assert_match(/covers \["BOUNCE"\]/, snapshot.policy_reason)
     @ses.stub_responses(:get_account, suppression_attributes: { suppressed_reasons: %w[BOUNCE COMPLAINT] })
     Bouncy.configuration.ses.identities = ["example.com"]
     @ses.stub_responses(:get_email_identity, configuration_set_name: "transactional")
     @ses.stub_responses(:get_configuration_set, suppression_options: { suppressed_reasons: [] })
-    refute @adapter.snapshot.policy_verified
+    snapshot = @adapter.snapshot
+    refute snapshot.policy_verified
+    assert_match(/configuration set transactional overrides/, snapshot.policy_reason)
     @ses.stub_responses(:get_configuration_set, suppression_options: { suppressed_reasons: %w[COMPLAINT BOUNCE] })
     assert @adapter.snapshot.policy_verified
     @ses.stub_responses(:get_configuration_set, {})
     assert @adapter.snapshot.policy_verified
+    @ses.stub_responses(:get_email_identity, {})
+    assert @adapter.snapshot.policy_verified, "an identity without a configuration set uses the account policy"
+    @ses.stub_responses(:get_account, {})
+    snapshot = @adapter.snapshot
+    refute snapshot.policy_verified
+    assert_match(/covers \[\]/, snapshot.policy_reason)
   end
 
   test "control confirmation uses signed token and topic rather than SubscribeURL" do
@@ -120,6 +132,7 @@ class SesTest < BouncyTest
     @sns.stub_responses(:get_topic_attributes, attributes: { "Policy" => JSON.generate("Statement" => []) })
     checks = @adapter.doctor
     assert checks["policy_verified"]
+    assert_nil checks["policy_reason"]
     assert_match(/unknown/, checks["write_permissions"])
     assert((@ses.api_requests + @sts.api_requests + @sns.api_requests).all? { |request| request[:operation_name].to_s.start_with?("get_") })
   end

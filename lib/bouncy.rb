@@ -37,20 +37,46 @@ module Bouncy
       yield configuration
     end
 
-    def reset_configuration! = (@configuration = Configuration.new)
+    def reset_configuration!
+      @warned_unconfigured = false
+      @configuration = Configuration.new
+    end
+
     def scope = configuration.validate!.scope
     def adapter = configuration.adapter || Providers::Ses.new(configuration)
-    def blocked = Suppression.where(scope: scope).blocked
-    def events = Event.where(scope: scope)
+
+    # True when config.scope is set. An unconfigured Bouncy is inactive: it intercepts nothing,
+    # reports no restrictions and returns empty relations, so a host can install the gem before
+    # its environment variables exist without breaking mail delivery. Explicit operations
+    # (sync!, block!, release!, forget!) still raise ConfigurationError.
+    def configured? = configuration.configured?
+
+    def unconfigured!(operation)
+      ActiveSupport::Notifications.instrument("unconfigured.bouncy", operation: operation)
+      return if @warned_unconfigured
+
+      @warned_unconfigured = true
+      Rails.logger&.warn("[bouncy] config.scope is not set, so Bouncy is inactive: no interception, no restrictions, no sync. " \
+                         "Set it in config/initializers/bouncy.rb.")
+      nil
+    end
+
+    def blocked = configured? ? Suppression.where(scope: scope).blocked : Suppression.none
+    def events = configured? ? Event.where(scope: scope) : Event.none
     def last_sync = events.where(kind: "sync").order(created_at: :desc, id: :desc).first
     def last_successful_sync = events.where(kind: "sync").order(created_at: :desc, id: :desc).detect { |event| event.details["complete"] }
 
     def status(email)
+      unless configured?
+        unconfigured!("status")
+        return Status.new(nil, knowledge: :unconfigured)
+      end
+
       Status.new(Suppression.find_by(scope: scope, email: Identity.normalize(email)))
     rescue ActiveRecord::ActiveRecordError => e
       raise unless database_unavailable?(e)
 
-      Status.new(nil, unavailable: true)
+      Status.new(nil, knowledge: :unavailable)
     end
 
     def blocked?(email) = status(email).blocked?
@@ -73,10 +99,11 @@ module Bouncy
     end
 
     def forget!(email)
+      current_scope = scope
       key = Identity.normalize(email)
       Suppression.transaction do
-        events.for(key).delete_all
-        Suppression.where(scope: scope, email: key).delete_all
+        Event.where(scope: current_scope, email: key).delete_all
+        Suppression.where(scope: current_scope, email: key).delete_all
       end
     end
 

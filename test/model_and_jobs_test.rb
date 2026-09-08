@@ -57,7 +57,13 @@ class ModelAndJobsTest < BouncyTest
   test "configuration rejects unsafe retention and invalid interception" do
     Bouncy.configuration.scope = nil
     assert_raises(Bouncy::ConfigurationError) { Bouncy.scope }
+    Bouncy.configuration.scope = "a" * 192
+    assert_raises(Bouncy::ConfigurationError) { Bouncy.scope }
     Bouncy.configuration.scope = "test"
+    Bouncy.configuration.adapter = nil
+    Bouncy.configuration.provider = :other
+    assert_raises(Bouncy::ConfigurationError) { Bouncy.scope }
+    Bouncy.configuration.provider = :ses
     Bouncy.configuration.interception = :silent
     assert_raises(Bouncy::ConfigurationError) { Bouncy.scope }
     Bouncy.configuration.interception = :log

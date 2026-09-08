@@ -1,10 +1,17 @@
 Bouncy.configure do |config|
   config.provider = :ses
+  # Leave the scope blank and Bouncy stays inactive: mail is delivered untouched, every address
+  # reads as unrestricted, and a warning is logged once. Set it to start observing.
   config.scope = ENV["BOUNCY_SCOPE"] # ses:123456789012:us-east-1:account
   config.ses.region = ENV["AWS_REGION"]
   config.ses.topic_arns = ENV.fetch("BOUNCY_SNS_TOPIC_ARNS", "").split(",").map(&:strip)
-  # Confirm that all mail uses the account policy; list any sending identities
-  # and configuration sets below. Doctor checks their effective policy.
-  config.ses.account_policy_only = false
+
+  # Imported provider restrictions are enforced only after `bin/rails bouncy:doctor` reports
+  # policy_verified: true. List every identity and configuration set you send through, then
+  # confirm the lists are complete. Until then sync mirrors the list without blocking anything.
+  config.ses.identities = []
+  config.ses.configuration_sets = []
+  config.ses.all_sending_paths_listed = false
+
   config.interception = :log # Review a complete sync before enabling :drop.
 end
