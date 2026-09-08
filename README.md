@@ -45,7 +45,7 @@ Initial support: **Amazon SES, including SES SMTP**, one account and region, Pos
 - Releases exact provider address variants before clearing local evidence. Manual holds remain independent.
 - Reconciles provider changes, retains release ordering information and reports incomplete or stale observations.
 
-Soft bounces are recorded without blocking an address. Delivery means the receiving server accepted a message; it does not prove inbox placement or reading.
+Soft bounces are recorded without blocking an address. A complaint blocks locally only when SES names exactly one recipient; a complaint that lists several possible recipients is recorded as candidates and enforced once the provider lists the address at the next sync. Delivery means the receiving server accepted a message; it does not prove inbox placement or reading.
 
 ## Installation
 
@@ -77,7 +77,7 @@ Bouncy.configure do |config|
   config.ses.topic_arns = ["arn:aws:sns:us-east-1:123456789012:feedback"]
   config.ses.identities = ["example.com"]
   config.ses.configuration_sets = ["transactional"]
-  config.ses.account_policy_only = true # Confirm every send uses this supported policy.
+  config.ses.all_sending_paths_listed = true # The two lists above are complete.
   config.interception = :log
 end
 
@@ -87,6 +87,10 @@ mount Bouncy::Engine => "/bouncy"
 
 Deploy the receiver with its allowlist before subscribing the topic. Follow the [Amazon SES setup guide](guides/amazon-ses.md), bootstrap with `bin/rails bouncy:sync`, and schedule `Bouncy::SyncJob` hourly and `Bouncy::PruneJob` daily using your existing job system.
 
+Until `config.scope` is set, Bouncy is inactive: mail is delivered untouched, every address reads as unrestricted, relations are empty, and one warning is logged. Sync, block and release raise `Bouncy::ConfigurationError`. That lets you add the gem before its environment variables exist without breaking mailer tests.
+
+Imported provider restrictions are enforced only once `bin/rails bouncy:doctor` reports `policy_verified: true`. Before that, sync runs in observation mode: the list is mirrored, nothing is blocked, and `policy_reason` says why (for example, the account list does not cover complaints, a configuration set overrides it, or `all_sending_paths_listed` is still false). Webhook events are enforced either way. A repeated sync that changes nothing writes no events and fires no hooks.
+
 SMTP credentials are not AWS API credentials. The optional SDKs use the usual AWS credential chain or injected clients. Requiring the gem does not query your database or call AWS.
 
 ## Email status
@@ -95,7 +99,9 @@ SMTP credentials are not AWS API credentials. The optional SDKs use the usual AW
 status = Bouncy.status("ada@example.com")
 status.blocked?
 status.reasons       # All effective reasons, including an independent manual hold
-status.knowledge     # :observed, :no_known_block, :unavailable
+status.knowledge     # :observed, :no_known_block, :unavailable, :unconfigured
+status.provider_listed?   # the provider lists this address in the configured scope
+status.policy_unverified? # listed but not enforced until the sending policy check passes
 status.stale?
 status.observed_at
 status.last_event
@@ -119,7 +125,7 @@ The macro adds `email_blocked?`, `email_bounced?`, `email_complained?`, `email_s
 
 Start in `:log`. After reviewing a complete import and testing delivery in staging, set `config.interception = :drop`. `:off` disables interception.
 
-In drop mode, Bouncy checks both headers and the SMTP envelope, removes only blocked recipients, and prevents normal delivery if no recipients remain. Provider-derived dropping needs a fresh, complete sync; local administrative holds remain effective independently. A recognized database outage leaves the original message intact.
+In drop mode, Bouncy checks both headers and the SMTP envelope, removes only blocked recipients, and prevents normal delivery if no recipients remain. Provider-derived dropping needs a fresh, complete sync; local administrative holds remain effective independently. Log mode applies the same rule, so its `skipped` events (`would_drop`, `stale_provider_evidence`) preview exactly what drop mode would do. A recognized database outage leaves the original message intact.
 
 ```ruby
 # A deliberate exception for synchronous mail in this execution context:

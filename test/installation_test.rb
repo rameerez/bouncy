@@ -13,7 +13,10 @@ class InstallationTest < BouncyTest
       assert_includes migration, "ActiveRecord::Migration[#{ActiveRecord::VERSION::MAJOR}.#{ActiveRecord::VERSION::MINOR}]"
       assert_includes migration, "primary_key_type, = primary_and_foreign_key_types"
       assert_includes migration, "t.public_send(json_column_type, :provider_entries"
-      assert_includes File.read("#{directory}/config/initializers/bouncy.rb"), "config.interception = :log"
+      refute_includes migration, ":payload"
+      initializer = File.read("#{directory}/config/initializers/bouncy.rb")
+      assert_includes initializer, "config.interception = :log"
+      assert_includes initializer, "config.ses.all_sending_paths_listed = false"
       refute(files.any? { |path| path.match?(/madmin|user\.rb|recurring\.yml/) })
     end
   end

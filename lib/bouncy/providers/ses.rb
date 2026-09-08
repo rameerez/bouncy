@@ -11,7 +11,7 @@ module Bouncy
 
       def snapshot
         started_at = Time.current
-        verified = policy_verified?
+        policy = policy_check
         entries = []
         tokens = []
         token = nil
@@ -27,8 +27,8 @@ module Bouncy
 
           tokens << token
         end
-        Snapshot.new(entries: entries, scope: @configuration.scope, complete: true,
-                     policy_verified: verified, started_at: started_at, finished_at: Time.current)
+        Snapshot.new(entries: entries, scope: @configuration.scope, complete: true, policy_verified: policy.verified,
+                     policy_reason: policy.reason, started_at: started_at, finished_at: Time.current)
       end
 
       def lookup(email)
@@ -86,8 +86,8 @@ module Bouncy
       end
 
       def doctor
-        verified = policy_verified?
-        { "scope" => @configuration.scope, "policy_verified" => verified,
+        policy = policy_check
+        { "scope" => @configuration.scope, "policy_verified" => policy.verified, "policy_reason" => policy.reason,
           "topic_allowlist" => @settings.topic_arns.any?, "topics" => topic_checks,
           "write_permissions" => "unknown; never tested by mutation" }
       end
@@ -128,7 +128,11 @@ module Bouncy
         raise ProviderError, "AWS request failed (#{e.code})"
       end
 
-      def policy_verified?
+      # Verifies that the configured scope matches the credentials and that every listed sending
+      # path uses account-level suppression for both bounces and complaints. Until this passes,
+      # sync runs in observation mode: entries are mirrored but nothing is enforced, and the
+      # reason is reported by the sync event and by `bouncy:doctor`.
+      def policy_check
         region = @settings.region
         raise ConfigurationError, "Set config.ses.region" unless region.to_s.match?(/\A[a-z]{2}(?:-[a-z]+)+-\d\z/)
 
@@ -141,18 +145,29 @@ module Bouncy
         ses = client
         raise UnsafeSnapshot, "SES client region differs from configured scope" unless ses.config.region == region
 
-        options = request { ses.get_account }.suppression_attributes
-        return false unless @settings.account_policy_only && options&.suppressed_reasons&.sort == %w[BOUNCE COMPLAINT]
+        reasons = request { ses.get_account }.suppression_attributes&.suppressed_reasons || []
+        unless reasons.sort == %w[BOUNCE COMPLAINT]
+          return PolicyCheck.new(verified: false, reason: "the SES account-level suppression list covers #{reasons.inspect}; " \
+                                                          "Bouncy needs both BOUNCE and COMPLAINT enabled for the account")
+        end
+        unless @settings.all_sending_paths_listed
+          return PolicyCheck.new(verified: false, reason: "config.ses.all_sending_paths_listed is false: list every identity and " \
+                                                          "configuration set you send through, then set it to true")
+        end
 
         sets = @settings.configuration_sets.dup
         @settings.identities.each do |identity|
           response = request { ses.get_email_identity(email_identity: identity) }
           sets << response.configuration_set_name if response.configuration_set_name.present?
         end
-        sets.uniq.all? do |name|
+        sets.uniq.each do |name|
           suppression = request { ses.get_configuration_set(configuration_set_name: name) }.suppression_options
-          suppression.nil? || suppression.suppressed_reasons.nil? || suppression.suppressed_reasons.sort == %w[BOUNCE COMPLAINT]
+          next if suppression.nil? || suppression.suppressed_reasons.nil? || suppression.suppressed_reasons.sort == %w[BOUNCE COMPLAINT]
+
+          return PolicyCheck.new(verified: false, reason: "configuration set #{name} overrides suppression with " \
+                                                          "#{suppression.suppressed_reasons.inspect}; Bouncy needs BOUNCE and COMPLAINT")
         end
+        PolicyCheck.new(verified: true, reason: nil)
       end
 
       def topic_checks

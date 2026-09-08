@@ -4,7 +4,7 @@ Supported paths are normal `deliver_now` and `deliver_later` when the queued job
 
 The interceptor calculates the recipient decision before changing the message. It checks To/Cc/Bcc and the actual SMTP envelope, preserves explicit subsets, persists skip evidence, then removes blocked recipients in `:drop` mode. Recognized database outages preserve original headers, envelope and delivery flag.
 
-`:log` observes while allowing delivery. `:off` disables interception. Manual holds apply independently; provider-derived dropping requires a recent complete sync. An interrupted worker or unsupported policy must not enforce an old mirror forever.
+`:log` observes while allowing delivery. `:off` disables interception. Manual holds apply independently; provider-derived dropping requires a recent complete sync. An interrupted worker or unsupported policy must not enforce an old mirror forever. Log mode applies the same freshness rule, so each `skipped` event's `would_drop` and `stale_provider_evidence` flags show exactly what drop mode would have done. An unconfigured scope disables interception entirely and logs one warning.
 
 `Bouncy.unblocked { ... }` is an execution-context exception with nested/exception-safe cleanup. It only wraps synchronous delivery; it does not serialize into jobs or apply to another process.
 

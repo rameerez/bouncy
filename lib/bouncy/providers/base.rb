@@ -8,7 +8,12 @@ module Bouncy
       end
     end
 
-    Snapshot = Data.define(:entries, :scope, :complete, :policy_verified, :started_at, :finished_at)
+    Snapshot = Data.define(:entries, :scope, :complete, :policy_verified, :started_at, :finished_at, :policy_reason) do
+      def initialize(policy_reason: nil, **members) = super
+    end
+
+    # Result of the sending-policy check: verified, or the plain-language reason it is not.
+    PolicyCheck = Data.define(:verified, :reason)
 
     class Base
       def snapshot = raise(NotImplementedError)

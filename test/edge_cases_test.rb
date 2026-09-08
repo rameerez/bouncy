@@ -119,3 +119,53 @@ class EdgeCasesTest < BouncyTest
     end
   end
 end
+
+class ScopeLockTest < BouncyTest
+  test "file locks follow the SQLite database path and a memory database uses a process lock" do
+    connection = ActiveRecord::Base.connection
+    Dir.mktmpdir("bouncy-lock") do |dir|
+      connection.pool.db_config.stub(:database, File.join(dir, "app.sqlite3")) do
+        connection.stub(:adapter_name, "SQLite") do
+          Bouncy::ScopeLock.synchronize { assert_equal 1, Dir["#{dir}/app.sqlite3.bouncy-*.lock"].size }
+          File.open(Dir["#{dir}/app.sqlite3.bouncy-*.lock"].sole, File::RDWR) do |file|
+            assert file.flock(File::LOCK_EX | File::LOCK_NB)
+            assert_raises(Bouncy::ProviderError) { Bouncy::ScopeLock.synchronize { flunk "lock was held" } }
+          end
+        end
+      end
+      connection.pool.db_config.stub(:database, ":memory:") do
+        connection.stub(:adapter_name, "SQLite") { Bouncy::ScopeLock.synchronize { assert true } }
+      end
+    end
+  end
+
+  test "programming errors inside interception are not fail open" do
+    Bouncy.block!("ada@example.com", note: "Hold")
+    Bouncy.stub(:blocked, -> { raise ActiveRecord::StatementInvalid, "bad SQL" }) do
+      assert_raises(ActiveRecord::StatementInvalid) do
+        Bouncy::Interceptor.delivering_email(Mail.new(to: "ada@example.com", from: "sender@example.com", body: "x"))
+      end
+    end
+  end
+
+  test "a second sync fails fast while the scope lock is held" do
+    acquired = Queue.new
+    release = Queue.new
+    holder = Thread.new do
+      Bouncy::ScopeLock.synchronize do
+        acquired << true
+        release.pop
+      end
+    end
+    acquired.pop
+    error = assert_raises(Bouncy::ProviderError) { Bouncy.sync! }
+    assert_match(/holds this scope lock/, error.message)
+    release << true
+    holder.value
+    Bouncy.sync!
+    assert Bouncy.last_sync
+  ensure
+    release << true if holder&.alive?
+    holder&.join
+  end
+end

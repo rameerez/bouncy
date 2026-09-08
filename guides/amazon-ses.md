@@ -6,7 +6,7 @@ Use this when a Rails mailer succeeds but SES refuses delivery because an addres
 
 The first release supports one AWS account, one region and account-level suppression of both bounces and complaints. Configure `ses:<account>:<region>:account`. The adapter verifies the AWS caller account and SES client region, reads the enabled account reasons, and checks suppression overrides on supplied configuration sets, including defaults found on configured identities.
 
-Set `account_policy_only = true` only after confirming every sending path uses this policy. List all sending identities and configuration sets. Dynamic per-message overrides, SES tenants and other accounts are not inferred from a default mailer. Unknown or conflicting policy leaves sync in observation mode. Bouncy cannot discover every future sending decision.
+List all sending identities and configuration sets, then set `all_sending_paths_listed = true` to confirm the lists are complete. Dynamic per-message overrides, SES tenants and other accounts are not inferred from a default mailer. Unknown or conflicting policy leaves sync in observation mode: the list is mirrored, nothing is enforced, and `bouncy:doctor` and each `sync` event carry a `policy_reason` in plain words. Bouncy cannot discover every future sending decision.
 
 ## Connect an existing SNS topic
 
@@ -38,4 +38,6 @@ Sync enumerates all pages without a time filter. Failure or unsupported policy i
 
 SES management addresses are case-sensitive. Bouncy retains exact spelling independently of lowercase local lookup keys and releases all observed variants. A lowercase NotFound does not establish that another case variant is absent.
 
-Complaint notifications can contain candidate recipients. Bouncy records them without blocking every candidate; authoritative reconciliation establishes the restriction. Account-list refusal events are hints rather than new mailbox failures. Allow up to the next scheduled sync for these hints in the initial implementation.
+Complaint notifications name every recipient of the message when the mailbox provider redacts the complainer. Bouncy blocks locally only when exactly one recipient is named; otherwise it records candidates and lets the next complete sync establish the restriction from the provider's own list. Account-list refusal events are hints rather than new mailbox failures. Allow up to the next scheduled sync for these hints in the initial implementation.
+
+Reconciliation is idempotent: a snapshot that changes nothing about an address refreshes its observation time only, without events, hooks or version bumps. Rows with neither provider evidence nor a webhook-derived block are never looked up at the provider. Only one sync runs per scope at a time; a second one fails immediately with `Bouncy::ProviderError` instead of queueing behind a run that may be waiting on AWS.

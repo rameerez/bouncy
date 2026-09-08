@@ -9,21 +9,30 @@ module Bouncy
       attributes = observation.to_h.merge(email: email)
       identity = [Bouncy.scope, Bouncy.configuration.provider, observation.provider_event_id, observation.kind, email]
       attributes[:dedupe_key] = Digest::SHA256.hexdigest(JSON.generate(identity))
-      return :duplicate if Bouncy.events.exists?(dedupe_key: attributes[:dedupe_key])
+      return :duplicate if duplicate?(attributes[:dedupe_key])
 
       if email
-        Store.change(email) { |row| persist(attributes, row) }
+        Store.change(email) do |row|
+          # Re-check under the row lock so a concurrent retry becomes a duplicate, not a unique violation.
+          next :duplicate if duplicate?(attributes[:dedupe_key])
+
+          persist(attributes, row)
+        end
       else
         Event.transaction { persist(attributes, nil) }
       end
     rescue ActiveRecord::RecordNotUnique
       # The unique event and its state transition committed in the same transaction.
-      raise unless Bouncy.events.exists?(dedupe_key: attributes[:dedupe_key])
+      raise unless duplicate?(attributes[:dedupe_key])
 
       :duplicate
     end
 
     private
+
+    def duplicate?(key)
+      Bouncy.events.exists?(dedupe_key: key)
+    end
 
     def persist(attributes, row)
       time = attributes.fetch(:occurred_at)
@@ -33,6 +42,8 @@ module Bouncy
       details = attributes.fetch(:details).merge("ignored_for_policy" => [too_old, fenced, out_of_order].any?)
       if row && !details["ignored_for_policy"]
         was_blocked = row.blocked?
+        # A complaint blocks locally only when the provider named exactly one recipient (SesParser
+        # marks it "confirmed"); candidates wait for the provider's own list at the next sync.
         if attributes[:kind] == "hard_bounce" || (attributes[:kind] == "complaint" && details["certainty"] == "confirmed")
           row.event_blocked_at = time
           row.event_reason = attributes[:kind]

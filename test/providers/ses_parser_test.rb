@@ -30,6 +30,10 @@ class SesParserTest < BouncyTest
                                                                                                   { "emailAddress" => "b@example.com" }] })
     assert_equal 2, events.size
     assert(events.all? { |event| event.kind == "complaint" && event.details["certainty"] == "candidate" })
+    single = parse("notificationType" => "Complaint", "complaint" => { "complainedRecipients" => [{ "emailAddress" => "a@example.com" }] }).first
+    assert_equal "confirmed", single.details["certainty"]
+    bounce = parse("eventType" => "Bounce", "bounce" => { "bounceType" => "Permanent", "bouncedRecipients" => ["a@example.com"] }).first
+    refute bounce.details.key?("certainty")
     event = parse("eventType" => "Complaint", "complaint" => { "complaintFeedbackType" => "not-spam",
                                                                "complainedRecipients" => ["a@example.com"] }).first
     assert_equal "ignored", event.kind

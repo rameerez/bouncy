@@ -183,3 +183,90 @@ class LifecycleTest < BouncyTest
     assert_empty Bouncy.blocked
   end
 end
+
+class SyncIdempotencyTest < BouncyTest
+  test "repeated identical snapshots write no events, fire no hooks and bump no versions" do
+    @provider.entries = [entry, entry("Bob@Example.com", reason: :complaint)]
+    Bouncy.sync!
+    assert_equal 2, Bouncy.events.where(kind: "sync_added").count
+    events = Bouncy.events.count
+    versions = Bouncy::Suppression.order(:email).pluck(:email, :lock_version)
+    checked = Bouncy::Suppression.find_by!(email: "ada@example.com").provider_checked_at
+    hooks = 0
+    Bouncy.configuration.after_event = ->(_event) { hooks += 1 }
+    travel 10.minutes
+    3.times { Bouncy.sync! }
+    assert_equal events + 3, Bouncy.events.count, "only the three sync summaries were recorded"
+    assert_equal 3, hooks
+    assert_equal versions, Bouncy::Suppression.order(:email).pluck(:email, :lock_version)
+    assert_operator Bouncy::Suppression.find_by!(email: "ada@example.com").provider_checked_at, :>, checked
+    assert_equal 2, Bouncy.last_sync.details["unchanged"]
+    assert_equal 0, Bouncy.last_sync.details["added"]
+    assert Bouncy.blocked?("ada@example.com")
+    assert Bouncy.blocked?("bob@example.com")
+  end
+
+  test "a changed reason is recorded once as an update" do
+    @provider.entries = [entry]
+    Bouncy.sync!
+    @provider.entries = [entry, entry("ADA@example.com", reason: :complaint)]
+    Bouncy.sync!
+    assert_equal 1, Bouncy.events.where(kind: "sync_updated").count
+    assert_equal :complaint, Bouncy.status("ada@example.com").reason
+    Bouncy.sync!
+    assert_equal 1, Bouncy.events.where(kind: "sync_updated").count
+  end
+
+  test "rows without provider evidence cost no provider lookups and no events" do
+    Bouncy.block!("carol@example.com", note: "Support hold")
+    @provider.entries = [entry]
+    Bouncy.sync!
+    Bouncy.release!("ada@example.com", note: "Recovered")
+    lookups = @provider.lookups.size
+    events = Bouncy.events.count
+    2.times { Bouncy.sync! }
+    assert_equal lookups, @provider.lookups.size
+    assert_equal events + 2, Bouncy.events.count
+    assert_equal [:manual], Bouncy.status("carol@example.com").reasons
+    assert_equal 0, Bouncy.events.where(kind: "sync_released").count
+  end
+
+  test "an absence that changes nothing yet is not reported as a release" do
+    observe(time: 2.hours.ago)
+    Bouncy.sync!
+    assert_equal 0, Bouncy.events.where(kind: "sync_released").count
+    assert Bouncy.blocked?("ada@example.com")
+    Bouncy.sync!
+    assert_equal 1, Bouncy.events.where(kind: "sync_released").count
+    assert Bouncy.events.where(kind: "sync_released").sole.details["became_unblocked"]
+    refute Bouncy.blocked?("ada@example.com")
+  end
+
+  test "status describes a listed and enforced address and other providers cannot release" do
+    @provider.entries = [entry]
+    Bouncy.sync!
+    status = Bouncy.status("ada@example.com")
+    assert status.provider_listed?
+    refute status.policy_unverified?
+    assert status.release_supported?
+    Bouncy.configuration.provider = :other
+    refute Bouncy.status("ada@example.com").release_supported?
+    refute Bouncy.status("nobody@example.com").provider_listed?
+  end
+
+  test "observation mode reports why nothing is enforced" do
+    @provider.entries = [entry]
+    @provider.policy_verified = false
+    @provider.define_singleton_method(:snapshot) do
+      Bouncy::Providers::Snapshot.new(entries: entries, scope: Bouncy.scope, complete: true, policy_verified: false,
+                                      policy_reason: "listed sending paths are incomplete", started_at: Time.current, finished_at: Time.current)
+    end
+    Bouncy.sync!
+    assert_equal "listed sending paths are incomplete", Bouncy.last_sync.details["policy_reason"]
+    status = Bouncy.status("ada@example.com")
+    assert status.provider_listed?
+    assert status.policy_unverified?
+    refute status.blocked?
+    assert_equal :observed, status.knowledge
+  end
+end

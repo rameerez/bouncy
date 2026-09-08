@@ -35,7 +35,7 @@ The tests execute the generated migration, persist JSON and UUID records, and re
 
 ## Synchronization
 
-PostgreSQL uses a session advisory lock; MySQL uses a named connection lock. Both are held on a checked-out connection across the provider scan and local reconciliation, with cleanup on failure. Tests verify exclusion from an independent process as well as separate connections.
+PostgreSQL uses a session advisory lock; MySQL uses a named connection lock. Both are held on a checked-out connection across the provider scan and local reconciliation, with cleanup on failure. Every adapter tries the lock without waiting: a second sync for the same scope raises `Bouncy::ProviderError` immediately rather than queueing behind a run that may be waiting on the provider. Tests verify exclusion from an independent process as well as separate connections.
 
 SQLite uses an OS file lock alongside the database file. All workers must access the same database file and lock path on a filesystem that supports `flock`. In-memory SQLite only exists inside its process and uses a process-specific lock file. Network filesystems and replicated SQLite arrangements need separate validation.
 

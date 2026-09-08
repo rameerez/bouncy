@@ -92,6 +92,21 @@ class InterceptorTest < BouncyTest
     assert_equal ["ada@example.com"], ExampleMailer.notice(to: "ada@example.com").deliver_now.to
   end
 
+  test "log mode previews exactly what drop mode would do" do
+    Bouncy.release!("ada@example.com", at: :local)
+    observe
+    ExampleMailer.notice(to: "ada@example.com").deliver_now
+    stale = Bouncy.events.where(kind: "skipped").sole
+    refute stale.details["would_drop"]
+    assert stale.details["stale_provider_evidence"]
+    Bouncy.sync!
+    ExampleMailer.notice(to: "ada@example.com").deliver_now
+    fresh = Bouncy.events.where(kind: "skipped").recent.first
+    assert fresh.details["would_drop"]
+    refute fresh.details["dropped"]
+    assert_equal 2, ActionMailer::Base.deliveries.size
+  end
+
   test "allowed messages are untouched and invalid addresses are not turned into policies" do
     message = Mail.new(to: "ben@example.com", from: "sender@example.com", body: "hello")
     original = message.encoded

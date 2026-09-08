@@ -4,13 +4,16 @@ module Bouncy
   class Configuration
     class Ses
       attr_accessor :region, :topic_arns, :client, :sns_client, :sts_client,
-                    :identities, :configuration_sets, :account_policy_only
+                    :identities, :configuration_sets, :all_sending_paths_listed
 
       def initialize
         @topic_arns = []
         @identities = []
         @configuration_sets = []
-        @account_policy_only = false
+        # Imported provider restrictions are enforced only after the policy check passes, and the
+        # check needs every sending identity and configuration set listed. This flag is the
+        # installer's statement that the lists above are complete.
+        @all_sending_paths_listed = false
       end
     end
 
@@ -30,8 +33,10 @@ module Bouncy
       @after_block = @after_release = @after_event = ->(_event) {}
     end
 
+    def configured? = !scope.to_s.strip.empty?
+
     def validate!
-      raise ConfigurationError, "Set config.scope to the provider account and region" if scope.to_s.empty?
+      raise ConfigurationError, "Set config.scope to the provider account and region" unless configured?
       raise ConfigurationError, "scope must be at most 191 characters" if scope.to_s.length > 191
       raise ConfigurationError, "Only the SES provider is supported" unless provider == :ses || adapter
       raise ConfigurationError, "interception must be :log, :drop or :off" unless %i[log drop off].include?(interception)

@@ -42,8 +42,10 @@ module Bouncy
           raw_email = recipient.is_a?(Hash) ? recipient["emailAddress"] : recipient
           email = normalize(raw_email)
           kind, classification = classify(type, data)
-          details = { "exact_email" => raw_email.to_s.truncate(254), "timestamp_fallback" => fallback,
-                      "certainty" => "candidate", "classification" => classification }
+          details = { "exact_email" => raw_email.to_s.truncate(254), "timestamp_fallback" => fallback, "classification" => classification }
+          # SES lists every recipient of the message when the mailbox provider redacts the
+          # complainer; a single named recipient is the complainer. Only that case blocks locally.
+          details["certainty"] = recipients.size == 1 ? "confirmed" : "candidate" if kind == "complaint"
           details["invalid_recipient"] = true if raw_email && !email
           recipientless_kind = %w[reject rendering_failure ignored].include?(kind) && raw_email.nil?
           Observation.new(email: email, kind: email || recipientless_kind ? kind : "ignored",
