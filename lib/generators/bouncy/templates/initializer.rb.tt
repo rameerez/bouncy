@@ -14,7 +14,7 @@ Bouncy.configure do |config|
   config.ses.all_sending_paths_listed = false
 
   # Soft bounces are temporary refusals, so they are recorded without blocking. Set a threshold
-  # to hold an address after that many soft bounces inside config.soft_bounce_window.
+  # from 1 to 50 to hold an address after repeated SES MailboxFull events inside the window.
   # config.soft_bounce_threshold = 3
   # config.soft_bounce_window = 30.days
   # config.soft_bounce_block_for = 30.days

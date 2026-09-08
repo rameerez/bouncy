@@ -91,7 +91,10 @@ Until `config.scope` is set, Bouncy is inactive: mail is delivered untouched, ev
 
 Run `bin/rails bouncy:doctor` to check the sending policy, then sync to import restrictions. An unverified policy leaves new imports in observation mode; `policy_reason` explains why. If verification later fails, historical restrictions remain queryable, but the interceptor stops dropping recipients based on provider or webhook evidence until a fresh, complete, verified sync succeeds. Independent manual holds still apply. Every sync records a summary; unchanged addresses create no additional events or hooks.
 
-SMTP credentials are not AWS API credentials. The optional SDKs use the usual AWS credential chain or injected clients. Requiring the gem does not query your database or call AWS.
+SMTP credentials are not AWS API credentials. The optional SDKs use the usual AWS credential chain, `config.ses.credentials`, or injected clients. Rails encrypted credentials must be passed explicitly. Requiring the gem does not query your database or call AWS.
+
+
+For a host migrating an existing suppression system, run `bin/rails bouncy:bootstrap` after importing legacy state and before starting mail workers. It requires a fresh complete sync with verified policy, performs one if needed, and raises on failure. `Bouncy.sync_fresh?` exposes the same health predicate the interceptor uses, so host health checks need no duplicated freshness logic. This startup gate does not change runtime fail-open behavior during later outages.
 
 ## Email status
 
@@ -155,7 +158,7 @@ Use any admin UI. Bouncy has **no Madmin dependency, generator or adapter**. An 
 
 ## Repeated soft bounces
 
-A soft bounce is a temporary refusal — a full mailbox, greylisting, a server having a bad day — so one of them is not a verdict and Bouncy only records it. Several for the same address inside a rolling window are a different signal. Opt in when you want them to stop the sending:
+Soft bounces are recorded by default. Opt in to a temporary local hold for repeated SES `MailboxFull` events. Content, size, attachment, general and unknown failures stay record-only because they do not establish a mailbox problem:
 
 ```ruby
 Bouncy.configure do |config|
@@ -165,7 +168,7 @@ Bouncy.configure do |config|
 end
 ```
 
-The window really rolls: each occurrence time is retained, and one that ages out stops counting rather than accumulating forever. Redelivered notifications count once. The resulting hold reads as `:soft_bounces`, is local policy like a manual hold, and so applies even while a provider sync is stale — the provider never listed this address, your application did. `Bouncy.release!` clears the history, so a single later bounce does not immediately re-hold the address.
+Thresholds must be between 1 and 50. The window really rolls: each occurrence time is retained, and one that ages out stops counting rather than accumulating forever. Redelivered notifications count once. The resulting hold reads as `:soft_bounces`, is local policy like a manual hold, and so applies even while a provider sync is stale — the provider never listed this address, your application did. `Bouncy.release!` clears the history and fences delayed pre-release soft feedback. Out-of-order events inside the current window still count; expired events cannot start a new hold.
 
 Hard bounces and complaints keep their own reason when soft evidence accumulates underneath them.
 

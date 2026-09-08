@@ -7,7 +7,7 @@ module Bouncy
       # caches Amazon's signing certificate, so a host can test its mounted receiver offline.
       # Topic authorization and certificate-URL checks still run, which is the point: a test
       # seam that skipped them would hide exactly the hole they exist to close.
-      attr_accessor :region, :topic_arns, :client, :sns_client, :sts_client, :sns_message_verifier,
+      attr_accessor :region, :credentials, :topic_arns, :client, :sns_client, :sts_client, :sns_message_verifier,
                     :identities, :configuration_sets, :all_sending_paths_listed
 
       def initialize
@@ -66,10 +66,11 @@ module Bouncy
       unless maximum_event_age.positive? && retention >= maximum_event_age
         raise ConfigurationError, "retention must cover maximum_event_age, and both must be positive"
       end
-      if soft_bounce_threshold && !(soft_bounce_threshold.is_a?(Integer) && soft_bounce_threshold.positive?)
-        raise ConfigurationError, "soft_bounce_threshold must be a positive integer, or nil to keep soft bounces record-only"
+      if soft_bounce_threshold && !(soft_bounce_threshold.is_a?(Integer) && (1..SOFT_BOUNCE_OCCURRENCE_LIMIT).cover?(soft_bounce_threshold))
+        raise ConfigurationError, "soft_bounce_threshold must be an integer from 1 to #{SOFT_BOUNCE_OCCURRENCE_LIMIT}, or nil"
       end
-      if soft_bounce_escalation? && !(soft_bounce_window.to_i.positive? && soft_bounce_block_for.to_i.positive?)
+      unless [soft_bounce_window, soft_bounce_block_for].all? { |duration| duration.is_a?(Numeric) || duration.is_a?(ActiveSupport::Duration) } &&
+             soft_bounce_window.positive? && soft_bounce_block_for.positive?
         raise ConfigurationError, "soft_bounce_window and soft_bounce_block_for must be positive durations"
       end
 

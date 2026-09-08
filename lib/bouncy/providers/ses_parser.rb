@@ -43,6 +43,7 @@ module Bouncy
           email = normalize(raw_email)
           kind, classification = classify(type, data)
           details = { "exact_email" => raw_email.to_s.truncate(254), "timestamp_fallback" => fallback, "classification" => classification }
+          details["escalation_eligible"] = data["bounceSubType"] == "MailboxFull" if kind == "soft_bounce"
           # SES lists every recipient of the message when the mailbox provider redacts the
           # complainer; a single named recipient is the complainer. Only that case blocks locally.
           details["certainty"] = recipients.size == 1 ? "confirmed" : "candidate" if kind == "complaint"

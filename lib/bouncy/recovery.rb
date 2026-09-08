@@ -35,7 +35,7 @@ module Bouncy
         # release would meet the threshold again immediately and re-hold the address.
         current.soft_bounce_count = 0
         current.last_soft_bounce_at = nil
-        current.details = current.details.except("soft_bounces")
+        current.details = current.details.except("soft_bounces").merge("soft_released_before" => started_at.iso8601(6))
         if at == :provider
           current.provider_entries = []
           current.provider_blocked_at = current.provider_reason = current.event_blocked_at = current.event_reason = nil

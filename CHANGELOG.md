@@ -17,3 +17,5 @@
 - `config.ses.sns_message_verifier` injects the SNS certificate verifier so a host can test its mounted receiver offline. Topic authorization, certificate-URL checks and the real signature check still run, so the seam cannot hide a receiver that would accept a foreign topic.
 
 This is an unpublished development release. See the README for supported boundaries and remaining release validation.
+
+- Dogfooding review: mailbox-only soft escalation, bounded configuration, out-of-order counting and release fences; shared AWS credentials; reusable sync freshness and fail-closed bootstrap APIs.

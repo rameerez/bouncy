@@ -38,7 +38,9 @@ module Bouncy
       time = attributes.fetch(:occurred_at)
       too_old = time < Bouncy.configuration.maximum_event_age.ago || time > 5.minutes.from_now
       fenced = row&.released_before && time <= row.released_before
-      out_of_order = row&.last_event_at && time < row.last_event_at
+      soft_fence = row && attributes[:kind] == "soft_bounce" && parse_time(row.details["soft_released_before"])
+      fenced ||= soft_fence && time <= soft_fence
+      out_of_order = attributes[:kind] != "soft_bounce" && row&.event_blocked_at && time < row.event_blocked_at
       details = attributes.fetch(:details).merge("ignored_for_policy" => [too_old, fenced, out_of_order].any?)
       if row && !details["ignored_for_policy"]
         was_blocked = row.blocked?
@@ -47,10 +49,10 @@ module Bouncy
         if attributes[:kind] == "hard_bounce" || (attributes[:kind] == "complaint" && details["certainty"] == "confirmed")
           row.event_blocked_at = time
           row.event_reason = attributes[:kind]
-          row.last_event_at = time
+          row.last_event_at = [row.last_event_at, time].compact.max
           row.details = row.details.except("absence_count")
           row.details["exact_email"] = details["exact_email"] if details["exact_email"]
-        elsif attributes[:kind] == "soft_bounce"
+        elsif attributes[:kind] == "soft_bounce" && details["escalation_eligible"] == true
           count_soft_bounce(row, time, details)
         end
         row.summarize!
@@ -70,16 +72,16 @@ module Bouncy
     def count_soft_bounce(row, time, details)
       window = Bouncy.configuration.soft_bounce_window
       previous = Array(row.details["soft_bounces"]).filter_map { |value| parse_time(value) }
-      occurrences = (previous.select { |occurred_at| occurred_at > time - window } + [time]).sort
+      occurrences = (previous + [time]).select { |occurred_at| occurred_at > Time.current - window }.sort
       occurrences = occurrences.last(Bouncy.configuration.soft_bounce_occurrences)
       row.details = row.details.merge("soft_bounces" => occurrences.map { |occurred_at| occurred_at.iso8601(6) })
       row.soft_bounce_count = occurrences.size
-      row.last_soft_bounce_at = time
-      row.last_event_at = time
+      row.last_soft_bounce_at = [row.last_soft_bounce_at, time].compact.max
+      row.last_event_at = [row.last_event_at, time].compact.max
       details["soft_bounce_count"] = occurrences.size
       return unless Bouncy.configuration.soft_bounce_escalation? && occurrences.size >= Bouncy.configuration.soft_bounce_threshold
 
-      row.soft_blocked_until = time + Bouncy.configuration.soft_bounce_block_for
+      row.soft_blocked_until = [row.soft_blocked_until, occurrences.last + Bouncy.configuration.soft_bounce_block_for].compact.max
       details["soft_blocked_until"] = row.soft_blocked_until.iso8601(6)
     end
 

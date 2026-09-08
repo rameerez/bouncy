@@ -26,11 +26,13 @@ Add `aws-sdk-sesv2`, `aws-sdk-sns`, and `aws-sdk-sts` to the host bundle. These 
 
 Runtime reads use `ses:ListSuppressedDestinations`, `ses:GetSuppressedDestination`, `ses:GetAccount`, `sts:GetCallerIdentity`, plus `ses:GetEmailIdentity` and `ses:GetConfigurationSet` for configured policies. Recovery adds `ses:DeleteSuppressedDestination`. Confirmation uses `sns:ConfirmSubscription`; doctor uses `sns:GetTopicAttributes`. Restrict resource-scoped actions to intended resources where AWS supports it. This release never calls `PutSuppressedDestination` or provisioning APIs.
 
+Set `config.ses.credentials` to an AWS credential provider to share the same credentials across SES, SNS and STS. For `aws-actionmailer-ses`, pass the credential object and region from the mailer's `ses_settings`; the AWS default chain does not read Rails encrypted credentials. [AWS credential-provider documentation](https://docs.aws.amazon.com/sdk-for-ruby/v3/developer-guide/credential-providers.html).
+
 Inject SDK clients through `config.ses.client`, `sns_client`, and `sts_client` if needed. Keep account and region consistent. Default clients use bounded connection/read timeouts and retries. Never print credentials in setup output.
 
 ## Testing your mounted receiver
 
-A host test that posts to the mounted route would otherwise download Amazon's signing certificate over the network. `config.ses.sns_message_verifier` replaces that one object, and nothing else:
+A host test that posts to the mounted route would otherwise download Amazon's signing certificate over the network. `config.ses.sns_message_verifier` injects the signature verifier. The following test subclass changes only certificate retrieval while retaining RSA verification:
 
 ```ruby
 class LocalCertificate < Aws::SNS::MessageVerifier
@@ -57,3 +59,5 @@ SES management addresses are case-sensitive. Bouncy retains exact spelling indep
 Ordinary complaint notifications can name candidate recipients when the mailbox provider redacts the complainer. Bouncy blocks locally only when exactly one recipient is named; otherwise it records candidates and lets the next complete sync establish the restriction from the provider's own list. Account-list refusal events are hints rather than new mailbox failures. Complaint subtypes `OnAccountSuppressionList` and `OnTenantSuppressionList` describe existing suppression, not a new complaint: the former is a provider-list hint, the latter an unsupported-scope diagnostic. Unknown complaint subtypes remain diagnostics. These distinctions follow the [SES notification contract](https://docs.aws.amazon.com/ses/latest/dg/notification-contents.html). Allow up to the next scheduled sync for account-list hints in the initial implementation.
 
 Reconciliation is idempotent: an identical address observation refreshes its check time without address events, hooks or version bumps. Changed provider timestamps are saved and advance the row version so concurrent recovery cannot clear newer evidence; they create no restriction event when the address and reason are unchanged. Every run still records a sync summary. Partial lists can refresh listed variants but cannot erase missing ones. Rows with neither provider evidence nor a webhook-derived block are never looked up at the provider. Only one sync runs per scope at a time; a second one fails immediately with `Bouncy::ProviderError` instead of queueing behind a run that may be waiting on AWS.
+
+Only inject a trusted verifier that performs signature verification. Bouncy still checks topic authorization and the certificate URL, but a custom verifier controls signature checking; keep offline substitutes in tests.

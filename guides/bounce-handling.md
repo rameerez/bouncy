@@ -16,11 +16,11 @@ Webhooks handle new events promptly; recurring full sync covers prior history, s
 
 ## Repeated soft bounces
 
-`config.soft_bounce_threshold` (default `nil`) turns repeated soft bounces into a local hold once that many fall inside `config.soft_bounce_window`, lasting `config.soft_bounce_block_for`. Occurrence times are retained per address and bounded, so the window rolls instead of accumulating a total that only grows, and redelivered notifications count once because event deduplication runs first.
+`config.soft_bounce_threshold` (default `nil`) turns repeated SES `MailboxFull` bounces into a local hold once that many fall inside `config.soft_bounce_window`, lasting `config.soft_bounce_block_for`. Occurrence times are retained per address and bounded, so the window rolls instead of accumulating a total that only grows, and redelivered notifications count once because event deduplication runs first.
 
-This is your policy, not the provider's: the address is not on the provider's suppression list, so the hold applies regardless of sync freshness, exactly like a manual hold, and `Bouncy.release!` clears the counters along with the hold. Choose the threshold deliberately. Content and size failures also arrive as soft bounces, so a low threshold can silence an address over a problem with one message rather than with the mailbox.
+This is your policy, not the provider's: the address is not on the provider's suppression list, so the hold applies regardless of sync freshness, exactly like a manual hold, and `Bouncy.release!` clears the counters along with the hold. Choose an integer threshold from 1 to 50. Content, size, attachment and unknown failures never count toward it. The adapter marks eligible observations explicitly; the core does not infer eligibility from an arbitrary negative event.
 
-Migrating from an existing threshold of your own? Import the active holds as `soft_blocked_until` and set the same threshold and window here, or the behaviour quietly disappears at cutover. See [migrating](migrating.md).
+Migrating from an existing threshold of your own? Preserve timed holds with their original expiry; preserve indefinite holds as explicit manual holds with a migration note. Review differences between the old rule and mailbox-only escalation instead of inventing an expiry at cutover. See [migrating](migrating.md).
 
 For the support workflow, see [admin integration](admin.md) and [recovery](recovery.md). For someone who says the email never arrived, follow [troubleshooting](troubleshooting.md) rather than assuming suppression is always the cause.
 

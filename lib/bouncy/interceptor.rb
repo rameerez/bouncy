@@ -20,8 +20,7 @@ module Bouncy
       # Provider-derived evidence is only enforced while a complete sync is fresh. Manual holds
       # and legacy soft holds are local policy and do not depend on provider freshness. The same
       # rule applies in :log mode so that its preview matches what :drop would do.
-      health = Bouncy.last_sync
-      fresh = health && health.details["complete"] && health.created_at >= Bouncy.configuration.stale_after.ago
+      fresh = Bouncy.sync_fresh?
       enforceable = rows.select { |row| fresh || row.manual_blocked_at || (row.soft_blocked_until && row.soft_blocked_until > Time.current) }
       blocked = enforceable.map(&:email)
       remaining = envelope.reject { |email| blocked.include?(normalize(email)) }

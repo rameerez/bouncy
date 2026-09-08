@@ -64,6 +64,18 @@ module Bouncy
     def blocked = configured? ? Suppression.where(scope: scope).blocked : Suppression.none
     def events = configured? ? Event.where(scope: scope) : Event.none
     def last_sync = events.where(kind: "sync").order(created_at: :desc, id: :desc).first
+
+    def sync_fresh?(sync = last_sync)
+      !!(configured? && sync && sync.scope == scope && sync.details["complete"] && sync.created_at >= configuration.stale_after.ago)
+    end
+
+    def bootstrap!
+      sync! unless sync_fresh?
+      raise UnsafeSnapshot, "Bootstrap requires a fresh complete sync with verified sending policy; run bouncy:doctor" unless sync_fresh?
+
+      last_sync
+    end
+
     def last_successful_sync = events.where(kind: "sync").order(created_at: :desc, id: :desc).detect { |event| event.details["complete"] }
 
     def status(email)
