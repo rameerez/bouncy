@@ -46,7 +46,7 @@ jobs:
       DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgresql://postgres:postgres@localhost:5432/bouncy_test' || matrix.database == 'mysql' && 'mysql2://root@127.0.0.1:3306/bouncy_test' || 'sqlite3::memory:' }}
       BOUNCY_TEST_PRIMARY_KEY: ${{ matrix.primary_key }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: ${{ matrix.ruby }}
@@ -56,7 +56,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
