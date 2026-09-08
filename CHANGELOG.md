@@ -12,4 +12,6 @@
 - Sync persists changed provider timestamps without restriction event churn and fences concurrent recovery against newer evidence.
 - Address policy diagnostics follow the latest scoped sync through verification loss, failed checks and recovery; `policy_reason` explains unverified state.
 
+- Optional soft-bounce escalation: `config.soft_bounce_threshold`, `config.soft_bounce_window` and `config.soft_bounce_block_for` turn repeated soft bounces into a local hold. Default stays record-only. Occurrence times are retained and bounded so the window rolls, and recovery clears them. Found while migrating a host application that had its own threshold; the schema anticipated this but nothing wrote the columns.
+
 This is an unpublished development release. See the README for supported boundaries and remaining release validation.

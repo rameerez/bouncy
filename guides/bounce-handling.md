@@ -12,7 +12,15 @@ No User record is needed. Optional `bouncy :email` model integration adds predic
 
 Start with [SES setup](amazon-ses.md). Both SES SMTP and Action Mailer SDK delivery can use the same management API mirror. API credentials are separate from SMTP credentials. Import historical restrictions before enabling delivery interception.
 
-Webhooks handle new events promptly; recurring full sync covers prior history, shared-account changes, missed notifications and console releases. Neither mechanism proves every mailbox is reachable. Soft bounces are record-only, an ordinary complaint blocks locally only when it names a single recipient, and message-size failures never globally invalidate an address. Suppression-list refusal notices are recorded separately from new complaints.
+Webhooks handle new events promptly; recurring full sync covers prior history, shared-account changes, missed notifications and console releases. Neither mechanism proves every mailbox is reachable. Soft bounces are record-only unless you configure a threshold, an ordinary complaint blocks locally only when it names a single recipient, and message-size failures never globally invalidate an address. Suppression-list refusal notices are recorded separately from new complaints.
+
+## Repeated soft bounces
+
+`config.soft_bounce_threshold` (default `nil`) turns repeated soft bounces into a local hold once that many fall inside `config.soft_bounce_window`, lasting `config.soft_bounce_block_for`. Occurrence times are retained per address and bounded, so the window rolls instead of accumulating a total that only grows, and redelivered notifications count once because event deduplication runs first.
+
+This is your policy, not the provider's: the address is not on the provider's suppression list, so the hold applies regardless of sync freshness, exactly like a manual hold, and `Bouncy.release!` clears the counters along with the hold. Choose the threshold deliberately. Content and size failures also arrive as soft bounces, so a low threshold can silence an address over a problem with one message rather than with the mailbox.
+
+Migrating from an existing threshold of your own? Import the active holds as `soft_blocked_until` and set the same threshold and window here, or the behaviour quietly disappears at cutover. See [migrating](migrating.md).
 
 For the support workflow, see [admin integration](admin.md) and [recovery](recovery.md). For someone who says the email never arrived, follow [troubleshooting](troubleshooting.md) rather than assuming suppression is always the cause.
 

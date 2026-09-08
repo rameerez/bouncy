@@ -50,6 +50,8 @@ module Bouncy
           row.last_event_at = time
           row.details = row.details.except("absence_count")
           row.details["exact_email"] = details["exact_email"] if details["exact_email"]
+        elsif attributes[:kind] == "soft_bounce"
+          count_soft_bounce(row, time, details)
         end
         row.summarize!
         details["became_blocked"] = !was_blocked && row.blocked?
@@ -57,6 +59,34 @@ module Bouncy
       Store.event!(attributes.fetch(:kind), **attributes.except(:kind, :details), source: "webhook",
                                                                                   provider: Bouncy.configuration.provider.to_s, details: details)
       :accepted
+    end
+
+    # Records this soft bounce against the address and, once config.soft_bounce_threshold of them
+    # fall inside config.soft_bounce_window, holds the address for config.soft_bounce_block_for.
+    # The occurrence times are kept so the window really rolls: a bounce that ages out stops
+    # counting, instead of a running total that only ever grows. Redelivered notifications are
+    # already filtered by the event dedupe key before this runs. With no threshold configured a
+    # soft bounce only updates the counters, which is the default.
+    def count_soft_bounce(row, time, details)
+      window = Bouncy.configuration.soft_bounce_window
+      previous = Array(row.details["soft_bounces"]).filter_map { |value| parse_time(value) }
+      occurrences = (previous.select { |occurred_at| occurred_at > time - window } + [time]).sort
+      occurrences = occurrences.last(Bouncy.configuration.soft_bounce_occurrences)
+      row.details = row.details.merge("soft_bounces" => occurrences.map { |occurred_at| occurred_at.iso8601(6) })
+      row.soft_bounce_count = occurrences.size
+      row.last_soft_bounce_at = time
+      row.last_event_at = time
+      details["soft_bounce_count"] = occurrences.size
+      return unless Bouncy.configuration.soft_bounce_escalation? && occurrences.size >= Bouncy.configuration.soft_bounce_threshold
+
+      row.soft_blocked_until = time + Bouncy.configuration.soft_bounce_block_for
+      details["soft_blocked_until"] = row.soft_blocked_until.iso8601(6)
+    end
+
+    def parse_time(value)
+      Time.iso8601(value.to_s)
+    rescue ArgumentError, TypeError
+      nil
     end
   end
 end

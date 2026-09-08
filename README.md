@@ -45,7 +45,7 @@ Initial support: **Amazon SES, including SES SMTP**, one account and region, Pos
 - Releases exact provider address variants before clearing local evidence. Manual holds remain independent.
 - Reconciles provider changes, retains release ordering information and reports incomplete or stale observations.
 
-Soft bounces are recorded without blocking an address. An ordinary complaint blocks locally only when SES names exactly one recipient; a complaint that lists several possible recipients is recorded as candidates and enforced once the provider lists the address at the next sync. Suppression-list refusal notices are recorded separately and never become new complaint blocks. Delivery means the receiving server accepted a message; it does not prove inbox placement or reading.
+Soft bounces are recorded without blocking an address, unless you opt into a threshold (`config.soft_bounce_threshold`). An ordinary complaint blocks locally only when SES names exactly one recipient; a complaint that lists several possible recipients is recorded as candidates and enforced once the provider lists the address at the next sync. Suppression-list refusal notices are recorded separately and never become new complaint blocks. Delivery means the receiving server accepted a message; it does not prove inbox placement or reading.
 
 ## Installation
 
@@ -152,6 +152,22 @@ Default recovery enumerates exact provider variants and confirms removal before 
 Releasing an SES account restriction can affect sister apps in that account and region. Your host application must authorize the action and confirm appropriate permission before resuming contact after a complaint. Release does not resend a message or repair a mailbox.
 
 Use any admin UI. Bouncy has **no Madmin dependency, generator or adapter**. An [optional admin recipe](guides/admin.md) shows how host-owned glue uses these APIs.
+
+## Repeated soft bounces
+
+A soft bounce is a temporary refusal — a full mailbox, greylisting, a server having a bad day — so one of them is not a verdict and Bouncy only records it. Several for the same address inside a rolling window are a different signal. Opt in when you want them to stop the sending:
+
+```ruby
+Bouncy.configure do |config|
+  config.soft_bounce_threshold = 3       # nil (the default) keeps soft bounces record-only
+  config.soft_bounce_window = 30.days    # occurrences older than this stop counting
+  config.soft_bounce_block_for = 30.days # how long the resulting hold lasts
+end
+```
+
+The window really rolls: each occurrence time is retained, and one that ages out stops counting rather than accumulating forever. Redelivered notifications count once. The resulting hold reads as `:soft_bounces`, is local policy like a manual hold, and so applies even while a provider sync is stale — the provider never listed this address, your application did. `Bouncy.release!` clears the history, so a single later bounce does not immediately re-hold the address.
+
+Hard bounces and complaints keep their own reason when soft evidence accumulates underneath them.
 
 ## Hooks and retention
 
