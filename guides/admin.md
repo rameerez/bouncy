@@ -24,6 +24,25 @@ Disable the stock destructive action: deleting a row loses release metadata and 
 
 The same approach works with ActiveAdmin, RailsAdmin or a custom Rails controller. No gem framework detection or admin generator is needed.
 
+## A badge on your own lists
+
+A user or customer list should show at a glance which addresses cannot be reached. Load the statuses for the page in one query and read each row's status by its address, in any spelling:
+
+```ruby
+# controller
+@statuses = Bouncy.statuses(@users.map(&:email))
+```
+
+```erb
+<%# view %>
+<% status = @statuses[user.email] %>
+<% if status.blocked? %>
+  <span class="badge" title="<%= status.reasons.join(", ") %>"><%= status.reason.to_s.humanize %></span>
+<% end %>
+```
+
+On a detail page, `Bouncy.status(email).record` is the `Bouncy::Suppression` row, which is what your admin's release page is keyed by.
+
 ## Address correction in the application
 
 Show a short status notice only after the host has authenticated and authorized the contact. For example: “We couldn't deliver email to this address. Check it in your contact settings.” Link to the host's existing verified address-change flow. Do not expose suppression lookup on a public password-reset form or reveal whether an unrelated address exists.

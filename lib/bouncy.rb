@@ -92,6 +92,24 @@ module Bouncy
     end
 
     def blocked?(email) = status(email).blocked?
+
+    # Statuses for many addresses in one query, for list views and bulk checks. Returns a
+    # StatusSet; look addresses up by any spelling. Invalid addresses are skipped.
+    def statuses(emails)
+      keys = Array(emails).filter_map { |email| Identity.normalize(email) rescue nil }.uniq # rubocop:disable Style/RescueModifier
+      unless configured?
+        unconfigured!("statuses")
+        return StatusSet.new({}, knowledge: :unconfigured)
+      end
+
+      rows = Suppression.where(scope: scope, email: keys).index_by(&:email)
+      StatusSet.new(keys.to_h { |key| [key, Status.new(rows[key])] })
+    rescue ActiveRecord::ActiveRecordError => e
+      raise unless database_unavailable?(e)
+
+      StatusSet.new({}, knowledge: :unavailable)
+    end
+
     def sync! = Reconciler.new(adapter).call
     def release!(email, note: nil, actor: nil, at: :provider) = Recovery.new(adapter).call(email, note: note, actor: actor, at: at)
 
@@ -146,6 +164,7 @@ require_relative "bouncy/record"
 require_relative "bouncy/suppression"
 require_relative "bouncy/event"
 require_relative "bouncy/status"
+require_relative "bouncy/status_set"
 require_relative "bouncy/store"
 require_relative "bouncy/providers/base"
 require_relative "bouncy/providers/ses"

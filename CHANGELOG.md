@@ -19,3 +19,4 @@
 This is an unpublished development release. See the README for supported boundaries and remaining release validation.
 
 - Dogfooding review: mailbox-only soft escalation, bounded configuration, out-of-order counting and release fences; shared AWS credentials; reusable sync freshness and fail-closed bootstrap APIs.
+- `Bouncy.statuses(emails)` answers many addresses with one query (a `StatusSet`, looked up by any spelling), and `Status#record` / `Status#email` expose the underlying row so a host can link to its own admin page. Found while adding bounce badges to a host's user and customer lists.
