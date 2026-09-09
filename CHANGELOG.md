@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.1.0] - Pending release
+## [0.1.0] - 2026-09-09
 
 Initial release of email bounce handling and suppression management for Rails, with Amazon SES support.
 
@@ -29,4 +29,4 @@ Initial release of email bounce handling and suppression management for Rails, w
 
 - Empty or already consumed webhook streams return 400 instead of raising a server error.
 
-This version is prepared but not published. Live provider acceptance and independent installation validation remain outstanding.
+Validation: the automated compatibility matrix and packaged installation smoke pass. Live provider acceptance and independent installation validation remain outstanding.

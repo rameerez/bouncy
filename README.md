@@ -32,7 +32,7 @@ User.email_blocked
 
 ## Status
 
-**v0.1.0 is being prepared and is not published yet.** Automated compatibility and host migration/rollback tests pass. Live SES lifecycle verification and an independent installation trial remain before publication.
+**v0.1.0 is the first release.** Automated compatibility, packaged installation and host migration/rollback tests pass. Live SES lifecycle verification and independent installation validation remain outstanding. Start in observation mode and verify your sending setup before enabling interception.
 
 Initial support: **Amazon SES, including SES SMTP**, one account and region, PostgreSQL/MySQL/SQLite, Rails 7.2–8.1 and Ruby 3.3/3.4/4.0. Other providers and a hosted dashboard are outside this release.
 
@@ -49,11 +49,11 @@ Soft bounces are recorded without blocking an address, unless you opt into a thr
 
 ## Installation
 
-While developing locally:
+Add the gem and the optional AWS SDKs used by the SES adapter:
 
 ```ruby
 # Gemfile
-gem "bouncy", path: "../bouncy"
+gem "bouncy", "~> 0.1.0"
 gem "aws-sdk-sesv2"
 gem "aws-sdk-sns"
 gem "aws-sdk-sts"
