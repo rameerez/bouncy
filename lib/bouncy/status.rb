@@ -4,10 +4,15 @@ module Bouncy
   class Status
     attr_reader :scope, :provider, :knowledge
 
+    # The underlying Bouncy::Suppression row, or nil. Hosts use it to link an address to
+    # their own admin page for it; it is not needed for any policy decision.
+    attr_reader :record
+
     # knowledge: :observed, :no_known_block, :unavailable (recognized database outage)
     # or :unconfigured (config.scope is not set; Bouncy is inactive).
     def initialize(row, knowledge: nil, unavailable: false)
       @row = row
+      @record = row
       @scope = Bouncy.configuration.scope
       @provider = Bouncy.configuration.provider
       @knowledge = knowledge
@@ -20,6 +25,7 @@ module Bouncy
                      end
     end
 
+    def email = @row&.email
     def blocked? = @row ? @row.blocked? : false
     def reasons = @row ? @row.reasons : []
     def reason = (%i[complaint hard_bounce provider_list manual soft_bounces] & reasons).first

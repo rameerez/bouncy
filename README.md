@@ -112,6 +112,12 @@ status.last_event
 
 Bouncy.blocked
 Bouncy.events.for("ada@example.com").recent
+
+# Many addresses in one query, for a list view or a bulk check:
+statuses = Bouncy.statuses(users.map(&:email))
+statuses["Ada@Example.com"].blocked?   # look up by any spelling
+statuses.blocked                       # only the blocked ones, as [email, status] pairs
+status.record                          # the Bouncy::Suppression row, for linking to your admin page
 ```
 
 `blocked?` asks about known local restrictions. An unknown address is not certified deliverable. Recognized database outages return `false` from the boolean API and `:unavailable` from the richer status API. Programming errors still raise.
