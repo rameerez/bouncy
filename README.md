@@ -45,7 +45,7 @@ Initial support: **Amazon SES, including SES SMTP**, one account and region, Pos
 - Releases exact provider address variants before clearing local evidence. Manual holds remain independent.
 - Reconciles provider changes, retains release ordering information and reports incomplete or stale observations.
 
-Soft bounces are recorded without blocking an address. An ordinary complaint blocks locally only when SES names exactly one recipient; a complaint that lists several possible recipients is recorded as candidates and enforced once the provider lists the address at the next sync. Suppression-list refusal notices are recorded separately and never become new complaint blocks. Delivery means the receiving server accepted a message; it does not prove inbox placement or reading.
+Soft bounces are recorded without blocking an address, unless you opt into a threshold (`config.soft_bounce_threshold`). An ordinary complaint blocks locally only when SES names exactly one recipient; a complaint that lists several possible recipients is recorded as candidates and enforced once the provider lists the address at the next sync. Suppression-list refusal notices are recorded separately and never become new complaint blocks. Delivery means the receiving server accepted a message; it does not prove inbox placement or reading.
 
 ## Installation
 
@@ -91,7 +91,10 @@ Until `config.scope` is set, Bouncy is inactive: mail is delivered untouched, ev
 
 Run `bin/rails bouncy:doctor` to check the sending policy, then sync to import restrictions. An unverified policy leaves new imports in observation mode; `policy_reason` explains why. If verification later fails, historical restrictions remain queryable, but the interceptor stops dropping recipients based on provider or webhook evidence until a fresh, complete, verified sync succeeds. Independent manual holds still apply. Every sync records a summary; unchanged addresses create no additional events or hooks.
 
-SMTP credentials are not AWS API credentials. The optional SDKs use the usual AWS credential chain or injected clients. Requiring the gem does not query your database or call AWS.
+SMTP credentials are not AWS API credentials. The optional SDKs use the usual AWS credential chain, `config.ses.credentials`, or injected clients. Rails encrypted credentials must be passed explicitly. Requiring the gem does not query your database or call AWS.
+
+
+For a host migrating an existing suppression system, run `bin/rails bouncy:bootstrap` after importing legacy state and before starting mail workers. It requires a fresh complete sync with verified policy, performs one if needed, and raises on failure. `Bouncy.sync_fresh?` exposes the same health predicate the interceptor uses, so host health checks need no duplicated freshness logic. This startup gate does not change runtime fail-open behavior during later outages.
 
 ## Email status
 
@@ -152,6 +155,22 @@ Default recovery enumerates exact provider variants and confirms removal before 
 Releasing an SES account restriction can affect sister apps in that account and region. Your host application must authorize the action and confirm appropriate permission before resuming contact after a complaint. Release does not resend a message or repair a mailbox.
 
 Use any admin UI. Bouncy has **no Madmin dependency, generator or adapter**. An [optional admin recipe](guides/admin.md) shows how host-owned glue uses these APIs.
+
+## Repeated soft bounces
+
+Soft bounces are recorded by default. Opt in to a temporary local hold for repeated SES `MailboxFull` events. Content, size, attachment, general and unknown failures stay record-only because they do not establish a mailbox problem:
+
+```ruby
+Bouncy.configure do |config|
+  config.soft_bounce_threshold = 3       # nil (the default) keeps soft bounces record-only
+  config.soft_bounce_window = 30.days    # occurrences older than this stop counting
+  config.soft_bounce_block_for = 30.days # how long the resulting hold lasts
+end
+```
+
+Thresholds must be between 1 and 50. The window really rolls: each occurrence time is retained, and one that ages out stops counting rather than accumulating forever. Redelivered notifications count once. The resulting hold reads as `:soft_bounces`, is local policy like a manual hold, and so applies even while a provider sync is stale — the provider never listed this address, your application did. `Bouncy.release!` clears the history and fences delayed pre-release soft feedback. Out-of-order events inside the current window still count; expired events cannot start a new hold.
+
+Hard bounces and complaints keep their own reason when soft evidence accumulates underneath them.
 
 ## Hooks and retention
 

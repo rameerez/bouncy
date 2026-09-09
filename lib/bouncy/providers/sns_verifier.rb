@@ -46,7 +46,7 @@ module Bouncy
                                     "pin aws-sdk-sns to a release tested with this version of bouncy"
         end
 
-        @verifier = BoundedVerifier.new
+        @verifier = configuration.ses.sns_message_verifier || BoundedVerifier.new
         @mutex = Mutex.new
       end
 

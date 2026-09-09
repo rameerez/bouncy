@@ -102,26 +102,30 @@ module Bouncy
 
       def client
         require_sdk("sesv2")
-        @client ||= @settings.client || Aws::SESV2::Client.new(region: @settings.region, retry_limit: 2,
-                                                               http_open_timeout: 3, http_read_timeout: 10)
+        @client ||= @settings.client || Aws::SESV2::Client.new(**client_options)
       end
 
       def sns_client
         require_sdk("sns")
-        @sns_client ||= @settings.sns_client || Aws::SNS::Client.new(region: @settings.region, retry_limit: 2,
-                                                                     http_open_timeout: 3, http_read_timeout: 10)
+        @sns_client ||= @settings.sns_client || Aws::SNS::Client.new(**client_options)
       end
 
       def sts_client
         require_sdk("sts")
-        @sts_client ||= @settings.sts_client || Aws::STS::Client.new(region: @settings.region, retry_limit: 2,
-                                                                     http_open_timeout: 3, http_read_timeout: 10)
+        @sts_client ||= @settings.sts_client || Aws::STS::Client.new(**client_options)
+      end
+
+      def client_options
+        { region: @settings.region, credentials: @settings.credentials, retry_limit: 2,
+          http_open_timeout: 3, http_read_timeout: 10 }.compact
       end
 
       def request
         yield
       rescue Seahorse::Client::NetworkingError => e
         raise ProviderError, "AWS transport failed (#{e.class.name})"
+      rescue Aws::Errors::MissingCredentialsError
+        raise ProviderError, "AWS credentials are missing; set config.ses.credentials or configure the AWS credential chain"
       rescue Aws::Errors::ServiceError => e
         raise if defined?(Aws::SESV2::Errors::NotFoundException) && e.is_a?(Aws::SESV2::Errors::NotFoundException)
 

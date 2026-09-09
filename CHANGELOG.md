@@ -12,4 +12,10 @@
 - Sync persists changed provider timestamps without restriction event churn and fences concurrent recovery against newer evidence.
 - Address policy diagnostics follow the latest scoped sync through verification loss, failed checks and recovery; `policy_reason` explains unverified state.
 
+- Optional soft-bounce escalation: `config.soft_bounce_threshold`, `config.soft_bounce_window` and `config.soft_bounce_block_for` turn repeated soft bounces into a local hold. Default stays record-only. Occurrence times are retained and bounded so the window rolls, and recovery clears them. Found while migrating a host application that had its own threshold; the schema anticipated this but nothing wrote the columns.
+
+- `config.ses.sns_message_verifier` injects the SNS certificate verifier so a host can test its mounted receiver offline. Topic authorization, certificate-URL checks and the real signature check still run, so the seam cannot hide a receiver that would accept a foreign topic.
+
 This is an unpublished development release. See the README for supported boundaries and remaining release validation.
+
+- Dogfooding review: mailbox-only soft escalation, bounded configuration, out-of-order counting and release fences; shared AWS credentials; reusable sync freshness and fail-closed bootstrap APIs.

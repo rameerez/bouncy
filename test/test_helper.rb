@@ -103,8 +103,9 @@ class BouncyTest < ActiveSupport::TestCase
   end
 
   def observe(email = "ada@example.com", kind: "hard_bounce", id: SecureRandom.uuid, time: Time.current, details: {})
+    details = { "escalation_eligible" => true }.merge(details) if kind == "soft_bounce"
     Bouncy::Ingestor.new.call(Bouncy::Observation.new(email: email, kind: kind, provider_event_id: id,
                                                       message_id: "message-1", occurred_at: time, details: details,
-                                                      provider_reason: nil, status_code: nil, diagnostic: nil))
+                                                      provider_reason: kind == "soft_bounce" ? "MailboxFull" : nil, status_code: nil, diagnostic: nil))
   end
 end
