@@ -1,22 +1,21 @@
-# 📨 `bouncy`: know when your app's emails bounce
+# 📨 `bouncy` - Know when your app's emails bounce
 
-[![Tests](https://github.com/rameerez/bouncy/actions/workflows/test.yml/badge.svg)](https://github.com/rameerez/bouncy/actions/workflows/test.yml)
+[![Gem Version](https://badge.fury.io/rb/bouncy.svg)](https://badge.fury.io/rb/bouncy) [![Build Status](https://github.com/rameerez/bouncy/actions/workflows/test.yml/badge.svg)](https://github.com/rameerez/bouncy/actions/workflows/test.yml)
 
-**Email bounce handling and suppression management for Rails.** Your email provider knows which addresses it has blocked. Now your app can know too.
+> [!TIP]
+> **🚀 Ship your next Rails app 10x faster!** I've built **[RailsFast](https://railsfast.com/?ref=bouncy)**, a production-ready Rails boilerplate template that comes with everything you need to launch a software business in days, not weeks. Go [check it out](https://railsfast.com/?ref=bouncy)!
 
-“I never got the email.” The job succeeded, your mailer ran, and SES refused an address on its suppression list. `bouncy` brings that information into your app so you can see the restriction, stop repeated attempts and help the person recover.
+`bouncy` brings **email bounce handling and suppression management** into your Rails app.
+
+“I never got the email.” Your mailer ran, the job succeeded, but Amazon SES refused an address on its suppression list. Bouncy keeps a local mirror so you can see what happened, avoid repeated attempts, and release the address from your own admin.
 
 ```ruby
-Bouncy.blocked?("ada@example.com")
-# => true
-
-Bouncy.status("ada@example.com").reason
-# => :hard_bounce
-
-Bouncy.release!("ada@example.com", note: "Corrected and verified with the customer")
+Bouncy.blocked?("ada@example.com")             # => true
+Bouncy.status("ada@example.com").reason       # => :hard_bounce
+Bouncy.release!("ada@example.com", note: "Verified recovery with the customer")
 ```
 
-Works for every address your app sends to: customers, invitees, buyers and contacts. No `User` record required. Use the optional model macro when you have one:
+Works for every address your app sends to: customers, invitees, buyers and contacts. No `User` record required. If you have one, add a single line:
 
 ```ruby
 class User < ApplicationRecord
@@ -27,37 +26,37 @@ user.email_blocked?
 User.email_blocked
 ```
 
-> [!TIP]
-> **🚀 Ship your next Rails app 10x faster!** I've built **[RailsFast](https://railsfast.com/?ref=bouncy)**, a production-ready Rails boilerplate with authentication, payments, admin and the boring parts already wired up. It's the home of the gem ecosystem that Bouncy belongs to.
+Check out my other 💎 Ruby gems: [`nondisposable`](https://github.com/rameerez/nondisposable) · [`api_keys`](https://github.com/rameerez/api_keys) · [`usage_credits`](https://github.com/rameerez/usage_credits) · [`pricing_plans`](https://github.com/rameerez/pricing_plans)
 
-## Status
+## What you get
 
-**v0.1.0 is the first release.** Automated compatibility, packaged installation and host migration/rollback tests pass. Live SES lifecycle verification and independent installation validation remain outstanding. Start in observation mode and verify your sending setup before enabling interception.
+- A local mirror of the SES account suppression list, including restrictions from before installation and other apps on the same account.
+- Signed SNS webhooks for new bounces and complaints, with exact-topic authorization and per-recipient deduplication.
+- Address status, model predicates and scopes, and batch lookups for badges on your lists.
+- Action Mailer interception that checks To, Cc, Bcc and the SMTP envelope.
+- Audited support holds and provider-aware recovery that preserves exact address spelling.
+- Sync and pruning jobs, hooks, and read-only setup diagnostics. Use your existing scheduler and admin framework.
 
-Initial support: **Amazon SES, including SES SMTP**, one account and region, PostgreSQL/MySQL/SQLite, Rails 7.2–8.1 and Ruby 3.3/3.4/4.0. Other providers and a hosted dashboard are outside this release.
+## Requirements
 
-## What it does
+- Ruby **3.3+** and Rails **7.2.3.2+**, below Rails 9. Tested on Ruby 3.3/3.4/4.0 and Rails 7.2/8.0/8.1.
+- **PostgreSQL, MySQL or SQLite**, with bigint or UUID primary keys.
+- **Amazon SES**, one account and region. SES SMTP is supported; suppression management needs AWS API credentials.
 
-- Mirrors the complete SES account suppression list into two local tables.
-- Receives signed SNS feedback, authorizes the exact topic, and records each recipient independently.
-- Exposes local address status, model scopes and a compact event history.
-- Observes or drops blocked recipients through Action Mailer's normal delivery path, including Bcc and explicit SMTP envelopes.
-- Releases exact provider address variants before clearing local evidence. Manual holds remain independent.
-- Reconciles provider changes, retains release ordering information and reports incomplete or stale observations.
-
-Soft bounces are recorded without blocking an address, unless you opt into a threshold (`config.soft_bounce_threshold`). An ordinary complaint blocks locally only when SES names exactly one recipient; a complaint that lists several possible recipients is recorded as candidates and enforced once the provider lists the address at the next sync. Suppression-list refusal notices are recorded separately and never become new complaint blocks. Delivery means the receiving server accepted a message; it does not prove inbox placement or reading.
+This is the first release. Start in observation mode and verify your sending setup before enabling dropping. See [compatibility and validation](guides/compatibility.md) for the tested matrix and remaining validation limits.
 
 ## Installation
 
-Add the gem and the optional AWS SDKs used by the SES adapter:
+Add these lines to your application's Gemfile:
 
 ```ruby
-# Gemfile
 gem "bouncy", "~> 0.1.0"
 gem "aws-sdk-sesv2"
 gem "aws-sdk-sns"
 gem "aws-sdk-sts"
 ```
+
+Then install the gem and generate its tables and initializer:
 
 ```sh
 bundle install
@@ -65,9 +64,9 @@ bin/rails generate bouncy:install
 bin/rails db:migrate
 ```
 
-The generator writes a migration and initializer. It prints the model line and scheduling instructions; your application owns its models, routes, scheduler and admin UI.
+The migration follows your app's primary-key setting and uses PostgreSQL JSONB or MySQL/SQLite JSON. See [database compatibility](guides/compatibility.md#migrations) for UUID configuration.
 
-Migrations follow the same conventions as `usage_credits`, `api_keys` and `nondisposable`: resolve the host's primary-key setting at migration time, use PostgreSQL JSONB or MySQL/SQLite JSON, and supply model defaults where MySQL requires them. UUID apps use native PostgreSQL UUIDs or application-generated UUID strings on MySQL/SQLite. See [database compatibility](guides/compatibility.md).
+Configure your actual account, region and sending paths:
 
 ```ruby
 # config/initializers/bouncy.rb
@@ -76,137 +75,126 @@ Bouncy.configure do |config|
   config.ses.region = "us-east-1"
   config.ses.topic_arns = ["arn:aws:sns:us-east-1:123456789012:feedback"]
   config.ses.identities = ["example.com"]
-  config.ses.configuration_sets = ["transactional"]
-  config.ses.all_sending_paths_listed = true # The two lists above are complete.
+  config.ses.configuration_sets = [] # List every set you use, if any.
+  config.ses.all_sending_paths_listed = true # Confirm both lists are complete.
   config.interception = :log
 end
+```
 
+The SDKs use the AWS credential chain. If your mailer uses Rails encrypted credentials, pass its AWS credential provider explicitly through `config.ses.credentials`. SMTP credentials cannot authenticate management calls. See [credentials and IAM](guides/amazon-ses.md#iam-and-sdk-dependencies).
+
+Mount the receiver in your routes:
+
+```ruby
 # config/routes.rb
 mount Bouncy::Engine => "/bouncy"
 ```
 
-Deploy the receiver with its allowlist before subscribing the topic. Follow the [Amazon SES setup guide](guides/amazon-ses.md), bootstrap with `bin/rails bouncy:sync`, and schedule `Bouncy::SyncJob` hourly and `Bouncy::PruneJob` daily using your existing job system.
+Follow the [SES setup guide](guides/amazon-ses.md) to connect bounce and complaint notifications to **`POST /bouncy/webhooks/ses`**. Deploy the allowlisted receiver before subscribing the SNS topic. Bouncy does not create or change your AWS configuration.
 
-Until `config.scope` is set, Bouncy is inactive: mail is delivered untouched, every address reads as unrestricted, relations are empty, and one warning is logged. Sync, block and release raise `Bouncy::ConfigurationError`. That lets you add the gem before its environment variables exist without breaking mailer tests.
+Check the policy and import the suppression list:
 
-Run `bin/rails bouncy:doctor` to check the sending policy, then sync to import restrictions. An unverified policy leaves new imports in observation mode; `policy_reason` explains why. If verification later fails, historical restrictions remain queryable, but the interceptor stops dropping recipients based on provider or webhook evidence until a fresh, complete, verified sync succeeds. Independent manual holds still apply. Every sync records a summary; unchanged addresses create no additional events or hooks.
+```sh
+bin/rails bouncy:doctor
+bin/rails bouncy:sync
+```
 
-SMTP credentials are not AWS API credentials. The optional SDKs use the usual AWS credential chain, `config.ses.credentials`, or injected clients. Rails encrypted credentials must be passed explicitly. Requiring the gem does not query your database or call AWS.
+Schedule `Bouncy::SyncJob` **hourly** and `Bouncy::PruneJob` **daily** with your existing job system. The [operations guide](guides/operations.md) includes scheduling examples and monitoring checks. After reviewing a complete, verified sync and testing delivery in staging, change `config.interception` to `:drop`.
 
+Until `config.scope` is set, Bouncy is inactive: mail goes out untouched and status reports `:unconfigured`. Explicit sync, block, release and erasure operations raise. No database or AWS call runs just from loading the gem.
 
-For a host migrating an existing suppression system, run `bin/rails bouncy:bootstrap` after importing legacy state and before starting mail workers. It requires a fresh complete sync with verified policy, performs one if needed, and raises on failure. `Bouncy.sync_fresh?` exposes the same health predicate the interceptor uses, so host health checks need no duplicated freshness logic. Run it explicitly at cutover, not on every application restart. Runtime fail-open behavior continues during later outages.
+## Usage
 
-## Email status
+### Check an address
 
 ```ruby
 status = Bouncy.status("ada@example.com")
-status.blocked?
-status.reasons       # All effective reasons, including an independent manual hold
-status.knowledge     # :observed, :no_known_block, :unavailable, :unconfigured
-status.provider_listed?   # the provider lists this address in the configured scope
-status.policy_unverified? # listed, but the latest sync did not verify the sending policy
-status.policy_reason      # why verification failed or is unknown; nil when verified or unlisted
-status.stale?
-status.observed_at
-status.last_event
+status.blocked?          # Any effective local restriction?
+status.reasons          # All reasons, including independent local holds
+status.knowledge        # :observed, :no_known_block, :unavailable, :unconfigured
+status.provider_listed?  # Exact provider identifiers are present locally
+status.policy_reason    # Why a listed address's sending policy is unverified
+status.stale?           # Address observation is missing or older than stale_after
 
 Bouncy.blocked
-Bouncy.events.for("ada@example.com").recent
+Bouncy.events.for("ada@example.com").recent.limit(20)
+```
 
-# Many addresses in one query, for a list view or a bulk check:
+`blocked?` describes known restrictions, not guaranteed deliverability or whether this particular message will be dropped. Provider-derived dropping requires a fresh, complete, policy-verified sync. Independent manual and active soft holds apply even when the mirror is stale. Recognized database outages fail open; the status API exposes `:unavailable`.
+
+For a list page, load all addresses in one query:
+
+```ruby
 statuses = Bouncy.statuses(users.map(&:email))
-statuses["Ada@Example.com"].blocked?   # look up by any spelling
-statuses.blocked                       # only the blocked ones, as [email, status] pairs
-status.record                          # the Bouncy::Suppression row, for linking to your admin page
+statuses["Ada@Example.com"].blocked?
+statuses.blocked # Hash of normalized addresses to blocked statuses
 ```
 
-`blocked?` asks about known local restrictions. An unknown address is not certified deliverable. Recognized database outages return `false` from the boolean API and `:unavailable` from the richer status API. Programming errors still raise.
+See the [API reference](guides/api.md) for all status readers, batch semantics and model scopes. Model scopes expect a trimmed lowercase stored column; use `bouncy :email, normalized_attribute: :canonical_email` if you keep a separate normalized value.
 
-Policy diagnostics use the latest sync in the address's scope, including failed checks. They do not erase historical evidence or replace the freshness check: `blocked?` can remain true while the interceptor lets mail through because verification failed or the sync is stale. Obtain a new status object after a sync to refresh its observations.
+### Stop repeated sends
 
-Model scopes expect the stored column to use Bouncy's trimmed lowercase comparison. For mixed-case display values, supply a persisted normalized column:
+Three modes: `:log` records what would be dropped while allowing delivery, `:drop` removes enforceable blocked recipients, and `:off` disables interception. An all-blocked message is prevented from normal delivery.
 
-```ruby
-bouncy :email, normalized_attribute: :canonical_email
-bouncy :billing_email
-```
-
-The macro adds `email_blocked?`, `email_bounced?`, `email_complained?`, `email_status`, and class scopes `email_blocked`, `email_bounced`, `email_unblocked`. The last excludes blank values and makes no deliverability claim.
-
-## Sending mail
-
-Start in `:log`. After reviewing a complete import and testing delivery in staging, set `config.interception = :drop`. `:off` disables interception.
-
-In drop mode, Bouncy checks both headers and the SMTP envelope, removes only blocked recipients, and prevents normal delivery if no recipients remain. Provider-derived dropping needs a fresh, complete sync; local administrative holds remain effective independently. Log mode applies the same rule, so its `skipped` events (`would_drop`, `stale_provider_evidence`) preview exactly what drop mode would do. A recognized database outage leaves the original message intact.
+Normal `deliver_now` and `deliver_later` are supported. Bang delivery methods, direct SDK sends and custom transports have [separate boundaries](guides/delivery.md).
 
 ```ruby
-# A deliberate exception for synchronous mail in this execution context:
+# An explicit exception for synchronous mail only:
 Bouncy.unblocked { SupportMailer.recovery(address).deliver_now }
 ```
 
-This bypass does not travel with an enqueued job. Bang delivery methods bypass Mail's `perform_deliveries` check and may attempt transport with an empty envelope, causing an error. Direct SDK sends and custom senders need their own integration. See [delivery boundaries](guides/delivery.md).
-
-## Support and recovery
+### Help someone recover
 
 ```ruby
-Bouncy.block!("ada@example.com", note: "Hold while support investigates", actor: "support:42")
-Bouncy.release!("ada@example.com", at: :local) # Remove local policy; retain provider evidence
-Bouncy.release!("ada@example.com", note: "Verified recovery", actor: "support:42")
+Bouncy.block!(address, note: "Support is investigating", actor: "support:42")
+Bouncy.release!(address, at: :local) # Clear manual/soft holds; retain provider/webhook evidence
+Bouncy.release!(address, note: "Verified recovery", actor: "support:42")
 ```
 
-Default recovery enumerates exact provider variants and confirms removal before clearing local state. Failures raise and leave local evidence available for review. A concurrent newer change can raise `Bouncy::ReleaseConflict`; review the latest state before retrying. Remote calls and your database cannot be one atomic transaction.
+Default release removes exact provider variants and verifies absence before clearing local state. Errors leave evidence available for review. Releasing an SES restriction can affect sister apps in that account and region; authorize the action in your app. Release does not resend mail or restore consent after a complaint. See [recovery and partial failures](guides/recovery.md).
 
-`Bouncy::ReleaseFailed#outcomes` identifies removed, already absent, failed and unattempted exact variants. The recovery audit records these outcomes too; a partial remote success never becomes a local success notice.
+Use any admin UI. Bouncy has **no Madmin dependency, generator or adapter**. The [admin recipe](guides/admin.md) covers host-owned recovery actions, badges and notifications.
 
-Releasing an SES account restriction can affect sister apps in that account and region. Your host application must authorize the action and confirm appropriate permission before resuming contact after a complaint. Release does not resend a message or repair a mailbox.
+### Handle repeated mailbox-full bounces
 
-Use any admin UI. Bouncy has **no Madmin dependency, generator or adapter**. An [optional admin recipe](guides/admin.md) shows how host-owned glue uses these APIs.
-
-## Repeated soft bounces
-
-Soft bounces are recorded by default. Opt in to a temporary local hold for repeated SES `MailboxFull` events. Content, size, attachment, general and unknown failures stay record-only because they do not establish a mailbox problem:
+Soft bounces are record-only by default. To add a temporary local hold after repeated SES `MailboxFull` bounces:
 
 ```ruby
 Bouncy.configure do |config|
-  config.soft_bounce_threshold = 3       # nil (the default) keeps soft bounces record-only
-  config.soft_bounce_window = 30.days    # occurrences older than this stop counting
-  config.soft_bounce_block_for = 30.days # how long the resulting hold lasts
+  config.soft_bounce_threshold = 3
+  config.soft_bounce_window = 30.days
+  config.soft_bounce_block_for = 30.days
 end
 ```
 
-Thresholds must be between 1 and 50. The window really rolls: each occurrence time is retained, and one that ages out stops counting rather than accumulating forever. Redelivered notifications count once. The resulting hold reads as `:soft_bounces`, is local policy like a manual hold, and so applies even while a provider sync is stale — the provider never listed this address, your application did. `Bouncy.release!` clears the history and fences delayed pre-release soft feedback. Out-of-order events inside the current window still count; expired events cannot start a new hold.
+Only mailbox-full events count. Content, attachment-size and unknown failures never trigger this hold. See [bounce classification](guides/bounce-handling.md) and [configuration defaults](guides/configuration.md).
 
-Hard bounces and complaints keep their own reason when soft evidence accumulates underneath them.
-
-## Hooks and retention
+### React to changes
 
 ```ruby
 Bouncy.configure do |config|
   config.after_block = ->(event) { SupportNotificationJob.perform_later(event.id) }
-  config.after_release = ->(event) { Rails.logger.info("Email recovery recorded: #{event.id}") }
-  config.record_deliveries = true # Optional normalized server-acceptance events
+  config.after_release = ->(event) { Rails.logger.info("Email recovery: #{event.id}") }
 end
 ```
 
-Hooks run after commit. A hook failure emits `hook_error.bouncy`; it does not undo ingestion. Hooks are best effort: use a host outbox for guaranteed external work.
+Your app defines the notification job. Hooks run after commit and are best effort. Events default to 90-day retention; no raw message bodies or payloads are stored. See [hooks and monitoring](guides/operations.md#hooks-and-instrumentation) and [privacy](guides/privacy.md).
 
-Events default to 90-day retention. Raw payloads, subjects and message bodies are not stored. Inactive state rows retain release ordering metadata. `Bouncy.forget!(email)` erases local state and history only; it does not release SES, and a later sync may import the restriction again.
+## Documentation
+
+The [guide index](guides/README.md) covers setup, every configuration option and public API, scheduling, admin integration, recovery, migration and troubleshooting.
 
 ## Development
 
 ```sh
 bin/setup
 bundle exec rake test
+bundle exec rubocop
 bundle exec appraisal install
 bundle exec appraisal rake test
-DATABASE_URL=postgresql:///bouncy_test bundle exec rake test
 ```
 
-Tests use Minitest, SimpleCov (90% line and branch minimum), actual generated migrations, SDK stubs and real RSA-signed SNS messages. See [contributing](CONTRIBUTING.md) for the compatibility matrix and isolated database setup.
-
-## More Rails gems
-
-Pair Bouncy with [`nondisposable`](https://github.com/rameerez/nondisposable) for disposable-address validation, [`api_keys`](https://github.com/rameerez/api_keys) for API authentication, [`usage_credits`](https://github.com/rameerez/usage_credits) for usage billing, and [`pricing_plans`](https://github.com/rameerez/pricing_plans) for subscription plans.
+Tests use Minitest, SimpleCov with 90% line and branch minimums, generated migrations, SDK stubs and real RSA-signed SNS messages. See [contributing](CONTRIBUTING.md) for PostgreSQL/MySQL and UUID test runs. Report vulnerabilities through [private security reporting](SECURITY.md).
 
 ## License
 

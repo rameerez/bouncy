@@ -30,6 +30,65 @@ Set `config.ses.credentials` to an AWS credential provider to share the same cre
 
 Inject SDK clients through `config.ses.client`, `sns_client`, and `sts_client` if needed. Keep account and region consistent. Default clients use bounded connection/read timeouts and retries. Never print credentials in setup output.
 
+### Rails encrypted credentials
+
+When the mailer already builds an AWS credential provider, share that object with Bouncy. Otherwise, for a host storing an `aws` section in encrypted credentials:
+
+```ruby
+# config/initializers/bouncy.rb, alongside the scope/topic configuration
+require "aws-sdk-sesv2"
+
+settings = Rails.application.credentials.fetch(:aws)
+Bouncy.configure do |config|
+  config.ses.region = settings.fetch(:region)
+  config.ses.credentials = Aws::Credentials.new(
+    settings.fetch(:access_key_id),
+    settings.fetch(:secret_access_key),
+    settings[:session_token]
+  )
+end
+```
+
+These are example credential key names; use your app's existing schema. Prefer the SDK credential chain when your deployment supplies role credentials that refresh automatically. A static `Aws::Credentials` object will not refresh expiring session credentials. Never copy SMTP passwords into these settings.
+
+### Permission checklist
+
+The following are the API actions the shipped adapter calls. Grant them to the app's API identity, independently of the identity used to send through SMTP:
+
+| Action | Used for |
+|---|---|
+| `ses:ListSuppressedDestinations` | Full provider enumeration for sync and release |
+| `ses:GetSuppressedDestination` | Exact-identifier absence checks |
+| `ses:GetAccount` | Account suppression reasons |
+| `ses:GetEmailIdentity` | Default configuration sets on each configured identity |
+| `ses:GetConfigurationSet` | Suppression overrides on explicit and discovered default sets |
+| `ses:DeleteSuppressedDestination` | Explicit provider recovery only |
+| `sns:ConfirmSubscription` | Confirm the authorized receiver subscription |
+| `sns:GetTopicAttributes` | Doctor's topic readability/publisher-policy review information |
+| `sts:GetCallerIdentity` | Verify the credentials' account |
+
+Scope grants to the intended region and resources where supported. Account-level SES actions need account-level access; a send-only grant on a domain identity is insufficient. STS caller identity is an identity lookup, not proof of any SES/SNS grant. A read-only role can run observation/sync with the required reads, but cannot perform provider recovery. Doctor does not prove deletion permission.
+
+### Topic publisher policy
+
+The runtime IAM identity and the SNS topic publisher policy are separate. For identity-level SES feedback, review a statement like this on your intended topic, replacing every example value:
+
+```json
+{
+  "Sid": "AllowIntendedSesIdentity",
+  "Effect": "Allow",
+  "Principal": { "Service": "ses.amazonaws.com" },
+  "Action": "sns:Publish",
+  "Resource": "arn:aws:sns:us-east-1:123456789012:feedback",
+  "Condition": {
+    "StringEquals": { "AWS:SourceAccount": "123456789012" },
+    "ArnEquals": { "AWS:SourceArn": "arn:aws:ses:us-east-1:123456789012:identity/example.com" }
+  }
+}
+```
+
+This is one statement to merge into a reviewed policy, not a replacement for the whole policy. Check other statements for unrelated publisher access. Configuration-set event destinations need the source conditions appropriate to that destination. Follow [AWS's SNS notification setup](https://docs.aws.amazon.com/ses/latest/dg/configure-sns-notifications.html) for identity notifications and preserve existing destinations. Review the [account suppression settings](https://docs.aws.amazon.com/ses/latest/dg/sending-email-suppression-list.html) before asserting that both bounce and complaint suppression apply to every sending path.
+
 ## Testing your mounted receiver
 
 A host test that posts to the mounted route would otherwise download Amazon's signing certificate over the network. `config.ses.sns_message_verifier` injects the signature verifier. The following test subclass changes only certificate retrieval while retaining RSA verification:
@@ -44,7 +103,7 @@ end
 Bouncy.configuration.ses.sns_message_verifier = LocalCertificate.new
 ```
 
-Topic authorization, the certificate-URL check and the real RSA signature check all still run against your configured allowlist and region, so this seam cannot hide a receiver that would accept a foreign topic in production. Sign fixtures with a locally generated key and assert that a valid signature on an unlisted `TopicArn` is rejected.
+Topic authorization and certificate-URL checks run outside the injected verifier. This example also retains the SDK's RSA signature check. The injected object itself is trusted: replacing it with a verifier that always succeeds would skip cryptographic authentication, so keep the default in production. Sign fixtures with a locally generated key and assert that a valid signature on an unlisted `TopicArn` is rejected.
 
 ## Failure and ordering
 
@@ -52,7 +111,7 @@ The webhook commits each recipient's event and address transition before acknowl
 
 Bodies are bounded to 2 MiB before parsing. Set a corresponding proxy limit. Certificate retrieval permits strict regional SNS HTTPS URLs, verifies TLS, rejects redirects and caps responses. Transport outages remain retryable.
 
-Sync enumerates all pages without a time filter. Failure or unsupported policy is not a successful empty list. Clearing missing restrictions requires complete enumeration, exact identifier checks and unchanged local state. Provider pagination is not an atomic snapshot; remote writers can change state after any observation. Inspect freshness and failures.
+Sync enumerates all pages without a time filter. Failure or unsupported policy is not a successful empty list. Clearing missing restrictions requires complete enumeration, exact identifier checks and unchanged local state. Webhook-only blocking evidence is not cleared on a single absent list entry: it must be over an hour old and absent across two qualifying checks. Independent manual and soft holds are preserved. Provider pagination is not an atomic snapshot; remote writers can change state after any observation. Inspect freshness and failures.
 
 SES management addresses are case-sensitive. Bouncy retains exact spelling independently of lowercase local lookup keys and releases all observed variants. A lowercase NotFound does not establish that another case variant is absent.
 

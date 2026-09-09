@@ -26,7 +26,7 @@ The same approach works with ActiveAdmin, RailsAdmin or a custom Rails controlle
 
 ## A badge on your own lists
 
-A user or customer list should show at a glance which addresses cannot be reached. Load the statuses for the page in one query and read each row's status by its address, in any spelling:
+A user or customer list should show at a glance which addresses have recorded delivery restrictions. Load the statuses for the page in one query and read each row's status by its address, in any spelling:
 
 ```ruby
 # controller

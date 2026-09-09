@@ -2,7 +2,7 @@
 
 Bouncy's compatibility suite covers Ruby 3.3, 3.4 and 4.0 with Rails 7.2, 8.0 and 8.1. Each combination runs on SQLite, PostgreSQL and MySQL with bigint and UUID keys. Rails 7.2 uses Minitest 5 because Active Support constrains that dependency; Rails 8 uses Minitest 6.
 
-The September 8, 2026 local run passed all 54 combinations using Ruby 3.3.5/3.4.7/4.0.5, Rails 7.2.3.2/8.0.5.1/8.1.3.1, PostgreSQL 18.3 and MySQL 8.4.11. Every combination passed the 90% line and branch coverage gates. CI is configured to repeat this matrix; a local pass is not a claim that a hosted CI run or a live SES lifecycle has occurred.
+The v0.1.0 release run on September 9, 2026 passed all 54 combinations using Ruby 3.3.5/3.4.7/4.0.5, Rails 7.2.3.2/8.0.5.1/8.1.3.1, PostgreSQL 18.3 and MySQL 8.4.11. Every combination passed the 90% line and branch coverage gates (131 tests on SQLite, 135 on PostgreSQL/MySQL). A fresh Rails app installed from the release archive also passed generator/migration, model/batch APIs, normal mail interception, local recovery and mounted receiver checks. CI is configured to repeat this matrix; a local pass is not a claim that a hosted CI run or a live SES lifecycle has occurred. Live SES lifecycle and independent installation validation remain outstanding for this first release.
 
 The runtime JSON gem is constrained below version 3 because the supported Rails releases still pass a positional options hash to `JSON.parse`. Optional AWS SDKs load lazily and are host dependencies. There is no database or AWS lookup during boot.
 
