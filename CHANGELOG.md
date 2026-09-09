@@ -25,4 +25,8 @@ Initial release of email bounce handling and suppression management for Rails, w
 - A known restriction is not a deliverability verdict. Provider outages and stale mirrors can suspend interception; direct SDK sends and bang delivery methods have separate boundaries documented in the guides.
 - No raw message payload storage, automatic AWS provisioning or built-in admin UI.
 
+### Fixed during release preparation
+
+- Empty or already consumed webhook streams return 400 instead of raising a server error.
+
 This version is prepared but not published. Live provider acceptance and independent installation validation remain outstanding.
