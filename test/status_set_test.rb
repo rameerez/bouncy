@@ -32,14 +32,16 @@ class StatusSetTest < BouncyTest
     statuses = Bouncy.statuses(["ada@example.com"])
     assert_equal :unconfigured, statuses["ada@example.com"].knowledge
     assert_equal 1, statuses.size
-    assert_equal [:unconfigured], (statuses.map { |_email, status| status.knowledge })
+    knowledge = statuses.map { |_email, status| status.knowledge }
+    assert_equal [:unconfigured], knowledge
     Bouncy.configuration.scope = "ses:123456789012:us-east-1:account"
     Bouncy::Suppression.stub(:where, ->(*) { raise ActiveRecord::ConnectionNotEstablished }) do
       statuses = Bouncy.statuses(["ada@example.com"])
       assert_equal :unavailable, statuses["ada@example.com"].knowledge
       refute statuses["ada@example.com"].blocked?
       assert_equal ["ada@example.com"], statuses.to_h.keys
-      assert_equal [:unavailable], (statuses.map { |_email, status| status.knowledge })
+      knowledge = statuses.map { |_email, status| status.knowledge }
+      assert_equal [:unavailable], knowledge
     end
     Bouncy::Suppression.stub(:where, ->(*) { raise ActiveRecord::StatementInvalid, "bad SQL" }) do
       assert_raises(ActiveRecord::StatementInvalid) { Bouncy.statuses(["ada@example.com"]) }
