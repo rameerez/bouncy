@@ -32,7 +32,7 @@ User.email_blocked
 
 ## Status
 
-**Unpublished development version: `0.1.0.alpha1`.** The core implementation and automated tests are in place. Live SES installation and host application migration/rollback remain release gates. Do not treat this checkout as a published production release.
+**v0.1.0 is the first release.** Automated compatibility, packaged installation and host migration/rollback tests pass. Live SES lifecycle verification and independent installation validation remain outstanding. Start in observation mode and verify your sending setup before enabling interception.
 
 Initial support: **Amazon SES, including SES SMTP**, one account and region, PostgreSQL/MySQL/SQLite, Rails 7.2–8.1 and Ruby 3.3/3.4/4.0. Other providers and a hosted dashboard are outside this release.
 
@@ -49,11 +49,11 @@ Soft bounces are recorded without blocking an address, unless you opt into a thr
 
 ## Installation
 
-While developing locally:
+Add the gem and the optional AWS SDKs used by the SES adapter:
 
 ```ruby
 # Gemfile
-gem "bouncy", path: "../bouncy"
+gem "bouncy", "~> 0.1.0"
 gem "aws-sdk-sesv2"
 gem "aws-sdk-sns"
 gem "aws-sdk-sts"
@@ -94,7 +94,7 @@ Run `bin/rails bouncy:doctor` to check the sending policy, then sync to import r
 SMTP credentials are not AWS API credentials. The optional SDKs use the usual AWS credential chain, `config.ses.credentials`, or injected clients. Rails encrypted credentials must be passed explicitly. Requiring the gem does not query your database or call AWS.
 
 
-For a host migrating an existing suppression system, run `bin/rails bouncy:bootstrap` after importing legacy state and before starting mail workers. It requires a fresh complete sync with verified policy, performs one if needed, and raises on failure. `Bouncy.sync_fresh?` exposes the same health predicate the interceptor uses, so host health checks need no duplicated freshness logic. This startup gate does not change runtime fail-open behavior during later outages.
+For a host migrating an existing suppression system, run `bin/rails bouncy:bootstrap` after importing legacy state and before starting mail workers. It requires a fresh complete sync with verified policy, performs one if needed, and raises on failure. `Bouncy.sync_fresh?` exposes the same health predicate the interceptor uses, so host health checks need no duplicated freshness logic. Run it explicitly at cutover, not on every application restart. Runtime fail-open behavior continues during later outages.
 
 ## Email status
 

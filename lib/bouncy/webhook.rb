@@ -10,7 +10,9 @@ module Bouncy
       # An unconfigured receiver answers 503 so the provider retries later instead of
       # treating the endpoint as broken or, worse, as having accepted the notification.
       Bouncy.configuration.validate!
-      body = environment.fetch("rack.input").read(BODY_LIMIT + 1)
+      body = environment.fetch("rack.input").read(BODY_LIMIT + 1).to_s
+      return response(400) if body.empty?
+
       return response(413) if body.bytesize > BODY_LIMIT
 
       adapter = Bouncy.adapter

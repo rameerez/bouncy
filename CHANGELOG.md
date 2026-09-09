@@ -1,22 +1,32 @@
 # Changelog
 
-## Unreleased
+## [Unreleased]
 
-- Initial Rails integration for SES suppression import, local status, manual holds and provider-aware recovery.
-- Authenticated, topic-authorized SNS bounce ingestion with per-recipient deduplication.
-- Action Mailer interception, optional model macro, install generator and background jobs.
-- Minitest, SimpleCov and Ruby/Rails/database compatibility suites.
-- Review fixes (2026-09-08): idempotent reconciliation (no events, hooks or version bumps when nothing changed; no provider lookups for rows without provider evidence); an unconfigured scope leaves mail untouched and reports `:unconfigured` instead of raising; `all_sending_paths_listed` replaces `account_policy_only` and observation mode reports a `policy_reason`; single-recipient complaints block locally; scope locks fail fast on every database; log mode previews drop mode faithfully; the unused `payload` column is gone; the SNS verifier refuses SDK versions without the hooks it bounds.
+## [0.1.0] - 2026-09-09
 
-- Suppression complaint subtypes remain provider hints or diagnostics instead of creating new complaint blocks.
-- Sync persists changed provider timestamps without restriction event churn and fences concurrent recovery against newer evidence.
-- Address policy diagnostics follow the latest scoped sync through verification loss, failed checks and recovery; `policy_reason` explains unverified state.
+Initial release of email bounce handling and suppression management for Rails, with Amazon SES support.
 
-- Optional soft-bounce escalation: `config.soft_bounce_threshold`, `config.soft_bounce_window` and `config.soft_bounce_block_for` turn repeated soft bounces into a local hold. Default stays record-only. Occurrence times are retained and bounded so the window rolls, and recovery clears them. Found while migrating a host application that had its own threshold; the schema anticipated this but nothing wrote the columns.
+### Added
 
-- `config.ses.sns_message_verifier` injects the SNS certificate verifier so a host can test its mounted receiver offline. Topic authorization, certificate-URL checks and the real signature check still run, so the seam cannot hide a receiver that would accept a foreign topic.
+- Address-keyed local restrictions and event history, including recipients without a User record.
+- Complete SES suppression-list reconciliation with account/region policy checks, exact-case provider identifiers and stale-mirror diagnostics.
+- Signed SNS feedback ingestion with exact-topic authorization, bounded certificate fetching, per-recipient deduplication and replay protection.
+- Audited local manual holds and provider-aware recovery. Provider release checks exact address variants before clearing local evidence; local holds remain independent of provider policy.
+- Normal Action Mailer interception, including Bcc and explicit SMTP envelopes. New installs default to observation mode; provider-derived dropping requires a fresh verified mirror.
+- Optional `bouncy :email` model predicates/scopes, individual status, and batch status lookup for lists. Unavailable batches retain requested addresses with explicit knowledge.
+- Opt-in repeated MailboxFull escalation with a bounded rolling window and temporary hold. Other soft failures remain record-only.
+- Shared AWS credential configuration, explicit bootstrap, read-only setup/doctor tasks, synchronization and retention jobs, and after-commit hooks.
+- Adaptive install migrations for bigint/UUID and PostgreSQL JSONB or MySQL/SQLite JSON. Madmin and other admin presentation remain host-owned.
 
-This is an unpublished development release. See the README for supported boundaries and remaining release validation.
+### Compatibility and boundaries
 
-- Dogfooding review: mailbox-only soft escalation, bounded configuration, out-of-order counting and release fences; shared AWS credentials; reusable sync freshness and fail-closed bootstrap APIs.
-- `Bouncy.statuses(emails)` answers many addresses with one query (a `StatusSet`, looked up by any spelling), and `Status#record` / `Status#email` expose the underlying row so a host can link to its own admin page. Found while adding bounce badges to a host's user and customer lists.
+- Ruby 3.3, 3.4 and 4.0; Rails 7.2–8.1; PostgreSQL, MySQL and SQLite.
+- Core requires Rails. The SES adapter uses optional AWS SDK gems installed by the host.
+- A known restriction is not a deliverability verdict. Provider outages and stale mirrors can suspend interception; direct SDK sends and bang delivery methods have separate boundaries documented in the guides.
+- No raw message payload storage, automatic AWS provisioning or built-in admin UI.
+
+### Fixed during release preparation
+
+- Empty or already consumed webhook streams return 400 instead of raising a server error.
+
+Validation: the automated compatibility matrix and packaged installation smoke pass. Live provider acceptance and independent installation validation remain outstanding.

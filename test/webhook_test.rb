@@ -81,6 +81,16 @@ class WebhookTest < BouncyTest
     assert_equal Bouncy::Webhook::BODY_LIMIT + 1, input.pos
   end
 
+  test "empty and already consumed request streams are rejected without provider work" do
+    [StringIO.new(""), StringIO.new(signed_envelope)].each do |input|
+      input.read
+      status, = Bouncy::Webhook.new.call("REQUEST_METHOD" => "POST", "rack.input" => input)
+      assert_equal 400, status
+    end
+    assert_empty Bouncy.events
+    assert_not_requested :get, CERT_URL
+  end
+
   test "malformed input and non string signed fields return 400" do
     ["{", "[]", "{}", JSON.generate(JSON.parse(signed_envelope).merge("Subject" => 42))].each do |body|
       assert_equal 400, post(body)
