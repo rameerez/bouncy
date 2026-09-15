@@ -24,5 +24,5 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
   spec.add_dependency "rails", ">= 7.2.3.2", "< 9"
   # Rails 7.2–8.1 pass a positional options hash to JSON.parse.
-  spec.add_dependency "json", ">= 2.0", "< 3"
+  spec.add_dependency "json", ">= 2.0", "< 4"
 end
