@@ -12,4 +12,4 @@ Migration and cutover belong in the implementing app. Bouncy's install migration
 
 Use the app's existing public webhook URL where possible. Test routing alongside unrelated webhooks, and preserve the existing interception mode deliberately. Host admin resources call Bouncy's recovery API; stock row deletion cannot stand in for provider release.
 
-v0.1.0 has automated schema and lifecycle coverage. Rehearse your actual application import, cutover and rollback against its own mappings and writers; the gem cannot infer them from an arbitrary legacy table.
+Bouncy has automated schema and lifecycle coverage. Rehearse your actual application import, cutover and rollback against its own mappings and writers; the gem cannot infer them from an arbitrary legacy table.

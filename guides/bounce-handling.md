@@ -14,7 +14,7 @@ Start with [SES setup](amazon-ses.md). Both SES SMTP and Action Mailer SDK deliv
 
 Webhooks handle new events promptly; recurring full sync covers prior history, shared-account changes, missed notifications and console releases. Neither mechanism proves every mailbox is reachable. Soft bounces are record-only unless you configure a threshold, an ordinary complaint blocks locally only when it names a single recipient, and message-size failures never globally invalidate an address. Suppression-list refusal notices are recorded separately from new complaints.
 
-## SES event classification in v0.1.0
+## SES event classification
 
 The adapter supports identity `notificationType` and configuration-set `eventType` envelopes. It records the normalized kind separately from the provider subtype:
 

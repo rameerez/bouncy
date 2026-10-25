@@ -39,4 +39,14 @@ PostgreSQL uses a session advisory lock; MySQL uses a named connection lock. Bot
 
 SQLite uses an OS file lock alongside the database file. All workers must access the same database file and lock path on a filesystem that supports `flock`. In-memory SQLite only exists inside its process and uses a process-specific lock file. Network filesystems and replicated SQLite arrangements need separate validation.
 
-Background scheduling remains host-owned. Normal Action Mailer delivery and a correctly configured job worker are tested; custom senders and bang delivery methods have [explicit boundaries](delivery.md).
+## Address locks
+
+`Bouncy.hold` and every Bouncy write to an address share one lock per address, with no schema change. Writes take it exclusively, first in their transaction and until it ends; a hold takes it shared, for its block and, inside a transaction, until that transaction ends.
+
+- **PostgreSQL** uses transaction-level advisory locks inside a transaction and a session lock for a hold outside one, in a two-key namespace apart from one-key application locks. Waits follow `lock_timeout`. A failed statement aborts the transaction, and PostgreSQL then releases its locks at once.
+- **MySQL** uses named `GET_LOCK` locks, which have no shared mode: senders to one address take turns. A wait lasts up to `innodb_lock_wait_timeout`, then raises `ActiveRecord::LockWaitTimeout`. Named locks are server-wide; the name includes the database.
+- **SQLite** uses one `flock` file per database (`<database>.bouncy-addresses.lock`), shared or exclusive, held per connection. Threads that share one connection, as Rails tests do, share its lock.
+
+Bouncy's `after_*` hooks run after the write released the address. The tests cover waiting, release at commit and rollback, nested use in one connection and the race between a bounce and a send on PostgreSQL and MySQL with real connections.
+
+Background scheduling remains host-owned. Action Mailer delivery, its bang methods and a correctly configured job worker are tested; custom senders have [explicit boundaries](delivery.md).

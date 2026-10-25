@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-25
+
+Eight features that apps need to replace a hand-rolled SES integration with Bouncy. There is no new migration: the address lock uses database locks, not a column.
+
+### Added
+
+- `config.ses.configuration_set` stamps `X-SES-CONFIGURATION-SET` on every message that names no set of its own, whatever the interception mode, and adds the set to the sending-policy check, so SES publishes each mail's events to the app's topic without a header in every mailer.
+- `Bouncy.hold(email) { ... }` takes a shared lock per address around an app's own check and send, and every Bouncy write takes it exclusively until its transaction ends, so a new bounce or complaint cannot land between the check and the send.
+- `config.on_notification` receives every SES notification synchronously (`type`, `recipients`, `message_id`, `occurred_at`, `tags`, `raw`) after its state commits and before the receiver answers, so an app can track its own Send and Delivery events, and a raise answers 503 so that SNS delivers again; the `after_*` hooks are unchanged.
+- `config.ses.subscription_confirmation = :subscribe_url` confirms an SNS subscription by visiting the signed `SubscribeURL` on the topic's own SNS host and answers 503 unless that visit gets a 2xx, so credentials without `sns:ConfirmSubscription` can confirm; the default `:api` is unchanged.
+- `config.require_fresh_sync = false` lets a webhook block drop mail with no sync at all, so an app on an SES account that other apps share need not mirror their suppression lists; the default `true` keeps the 0.1 rule.
+- `Bouncy::BodyLimit` is Rack middleware (300 KB by default, configurable) that cuts the receiver's body before Rails reads a whole chunked body or parses it for its log; the receiver's own 2 MiB limit stays.
+
+### Changed
+
+- An Action Mailer `before_deliver` callback stops a message that `:drop` left with no recipient, so `deliver_now!` and `deliver_later!` send nothing either, and a halted `deliver_now` returns `false` instead of the message.
+- The interceptor keeps each remaining To, Cc, Bcc and SMTP envelope entry as written, display name included, because it looks up only the entry's bare address.
+
 ## [0.1.0] - 2026-09-09
 
 Initial release of email bounce handling and suppression management for Rails, with Amazon SES support.

@@ -64,7 +64,7 @@ A successful authoritative summary has `complete: true`, `enumerated: true`, `po
 
 `entries` counts exact provider entries; address counts are normalized. Metadata-only refreshes and unchanged restrictions do not emit per-address change events. Each completed reconciliation still emits a summary. A lock acquisition failure or some configuration/database failures can occur before a summary is recorded; monitor job failures as well as freshness.
 
-Keep the sync interval shorter than `stale_after` (default two hours). If the mirror is stale or a newer sync reports unverified policy, the interceptor stops dropping based on provider/webhook evidence. Independent manual and active soft holds remain effective. The status API can still show historical restrictions; it describes evidence, not the current transport decision.
+Keep the sync interval shorter than `stale_after` (default two hours). If the mirror is stale or a newer sync reports unverified policy, the interceptor stops dropping based on provider/webhook evidence. An app that runs no sync sets `config.require_fresh_sync = false`: every recorded block then drops mail, and nothing clears a webhook block on its own. Independent manual and active soft holds remain effective. The status API can still show historical restrictions; it describes evidence, not the current transport decision.
 
 A host health check can use `Bouncy.sync_fresh?` and rescue recognized database outages to report an unhealthy dependency. Decide in the host whether to expose this as a separate email-health indicator or affect overall readiness. Do not expose address history or provider diagnostics in an unauthenticated health response.
 
@@ -80,9 +80,11 @@ end
 
 Implement the example jobs in the host. Callbacks receive a committed `Bouncy::Event`. `after_event` runs for every newly created event, including sync summaries and interception observations. `after_block` runs when `details["became_blocked"]` is true, not for every repeated bounce. `after_release` runs for explicit `release` events, including local-only releases; it does not run for `sync_released`. Use `after_event` with a kind check if you need to observe reconciliation releases.
 
-Hooks are best effort. Exceptions emit `hook_error.bouncy` with `hook` and `error_class`, and do not undo the event. A process can stop after commit before notification completes. Use idempotent consumers and a host outbox/reconciliation mechanism for guaranteed external work. Jobs should tolerate an event being pruned before execution.
+These hooks are best effort. Exceptions emit `hook_error.bouncy` with `hook` and `error_class`, and do not undo the event. They run after the commit, and after Bouncy released the address lock. A process can stop after commit before notification completes. Use idempotent consumers and a host outbox/reconciliation mechanism for guaranteed external work. Jobs should tolerate an event being pruned before execution.
 
-Other Active Support notifications are `unconfigured.bouncy` (operation attempted while inactive) and `unavailable.bouncy` (interception encounters a recognized database outage). Subscribe using your existing instrumentation:
+`config.on_notification` is different: it runs synchronously in the receiver, with every SES notification, and its failure is not swallowed. A raise emits `hook_error.bouncy` with `hook: :on_notification`, logs the error class and answers 503, so SNS delivers the notification again. Keep it short and idempotent; see [SES notifications](api.md#ses-notifications).
+
+Other Active Support notifications are `unconfigured.bouncy` (operation attempted while inactive, including `hold`) and `unavailable.bouncy` (interception encounters a recognized database outage). Subscribe using your existing instrumentation:
 
 ```ruby
 ActiveSupport::Notifications.subscribe("hook_error.bouncy") do |*args|

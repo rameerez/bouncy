@@ -120,8 +120,51 @@ class WebhookTest < BouncyTest
     overrides = { "Type" => "SubscriptionConfirmation", "Token" => "token", "SubscribeURL" => "https://attacker.invalid" }
     assert_equal 200, post(signed_envelope(overrides))
     assert_equal :confirm_subscription, Bouncy.configuration.ses.sns_client.api_requests.last[:operation_name]
+    assert_equal({ "via" => "api" }, Bouncy.events.where(kind: "subscription_confirmed").sole.details)
     assert_equal 401, post(signed_envelope(overrides.merge("TopicArn" => "arn:aws:sns:us-east-1:999999999999:foreign")))
     assert_equal 1, Bouncy.configuration.ses.sns_client.api_requests.size
+  end
+
+  test "with subscribe_url a signed confirmation of the topic is confirmed on its SNS URL only" do
+    Bouncy.configuration.ses.subscription_confirmation = :subscribe_url
+    url = "https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription&TopicArn=#{TOPIC}&Token=fictional"
+    confirmation = stub_request(:get, url).to_return(status: 200, body: "<ConfirmSubscriptionResponse/>")
+    overrides = { "Type" => "SubscriptionConfirmation", "Token" => "fictional", "SubscribeURL" => url }
+
+    assert_equal 200, post(signed_envelope(overrides))
+    ["https://confirm.example.com/", "http://sns.us-east-1.amazonaws.com/", "https://sns.eu-west-1.amazonaws.com/",
+     "https://user@sns.us-east-1.amazonaws.com/", "https://sns.us-east-1.amazonaws.com:8443/", "#{url}#fragment",
+     "https://sns.us-east-1.amazonaws.com/%"].each do |other|
+      assert_equal 400, post(signed_envelope(overrides.merge("SubscribeURL" => other))), other
+    end
+    assert_equal 401, post(signed_envelope(overrides.merge("TopicArn" => "arn:aws:sns:us-east-1:999999999999:feedback")))
+
+    assert_requested confirmation, times: 1
+    assert_empty Bouncy.configuration.ses.sns_client.api_requests, "no sns:ConfirmSubscription call"
+    assert_equal({ "via" => "subscribe_url" }, Bouncy.events.where(kind: "subscription_confirmed").sole.details)
+  end
+
+  test "a confirmation visit that does not answer 2xx answers 503, so SNS sends the confirmation again" do
+    Bouncy.configuration.ses.subscription_confirmation = :subscribe_url
+    url = "https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription&TopicArn=#{TOPIC}&Token=fictional"
+    body = signed_envelope("Type" => "SubscriptionConfirmation", "Token" => "fictional", "SubscribeURL" => url)
+
+    stub_request(:get, url).to_return(status: 500)
+    assert_equal 503, post(body)
+    stub_request(:get, url).to_return(status: 302, headers: { "Location" => "https://attacker.example.com/" })
+    assert_equal 503, post(body)
+    stub_request(:get, url).to_timeout
+    assert_equal 503, post(body)
+    stub_request(:get, url).to_raise(Errno::ECONNREFUSED)
+    assert_equal 503, post(body)
+    stub_request(:get, url).to_return(status: 200, body: "x" * (65 * 1024))
+    assert_equal 503, post(body)
+    assert_empty Bouncy.events
+    assert_not_requested :get, "https://attacker.example.com/"
+
+    stub_request(:get, url).to_return(status: 204)
+    assert_equal 200, post(body)
+    assert_equal 1, Bouncy.events.where(kind: "subscription_confirmed").count
   end
 
   test "unexpected implementation errors are not converted into successful ingestion" do

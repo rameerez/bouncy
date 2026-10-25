@@ -64,7 +64,7 @@ User.email_bounced
 User.email_unblocked
 ```
 
-Each configured attribute gets the same methods with its own prefix. There is no `email_complained` class scope in v0.1.0. Blank values are false for the boolean predicates and excluded from the unblocked scope; a direct `email_status` call still follows single-address input validation.
+Each configured attribute gets the same methods with its own prefix. There is no `email_complained` class scope. Blank values are false for the boolean predicates and excluded from the unblocked scope; a direct `email_status` call still follows single-address input validation.
 
 SQL scopes expect stored values to use the same trimmed lowercase comparison. Normalize every configured attribute and backfill existing data in the host. If you preserve mixed-case display values, use a persisted comparison column:
 
@@ -92,6 +92,22 @@ The override applies to status and predicates as well as scopes. Your app must p
 | `Bouncy.configured?` | Whether a nonblank scope is assigned; no AWS verification. |
 | `Bouncy.scope` | Configured scope after local configuration validation. |
 | `Bouncy.unblocked { ... }` | Temporarily bypass interception for synchronous delivery in this execution context. Does not travel with queued jobs. |
+| `Bouncy.hold(address) { ... }` | Hold the address while the block runs, and inside a transaction until it ends, so no Bouncy write to it commits between the app's own check and its send. Returns the block's value. See [a sender that checks and sends](delivery.md#a-sender-that-checks-and-sends-in-one-step). |
+
+## SES notifications
+
+`config.on_notification` receives a `Bouncy::Notification` for every SES notification on an authorized topic, Send and Delivery included:
+
+| Reader | Meaning |
+|---|---|
+| `type` | The SES event type as SES names it: `"Send"`, `"Delivery"`, `"Bounce"`, `"Complaint"`, `"DeliveryDelay"`, ... |
+| `message_id` | The SES message id of the mail, or `nil`. |
+| `recipients` | The addresses the event is about, exactly as SES spells them: bounced, complained, delivered or delayed recipients; the mail's destination for other types. |
+| `occurred_at` | The event's own timestamp, else the mail's, else the time SNS published it. |
+| `tags` | The mail's SES message tags: each name maps to an array of values. `{}` when there are none. |
+| `raw` | The SES event as a Hash, for any other field. |
+
+The hook runs after Bouncy committed what it records from the notification, outside any transaction or Bouncy lock, and before the receiver answers. A raise answers 503 and SNS delivers the notification again: Bouncy's own records deduplicate, so make the hook safe to repeat. Subscription confirmations and refused messages never reach it.
 
 Use service methods for changes instead of editing or deleting suppression rows directly. Their independent evidence and release metadata are part of the consistency contract. Relations from `Bouncy.blocked` and `Bouncy.events` are empty when unconfigured, but explicit operations raise. See [recovery](recovery.md) and [operations](operations.md).
 
@@ -101,7 +117,7 @@ All gem errors inherit from `Bouncy::Error`:
 
 | Error | Meaning / response |
 |---|---|
-| `InvalidAddress` | Invalid lookup/mutation input; correct the address. |
+| `InvalidAddress` | Invalid lookup/mutation/hold input; correct the address. |
 | `ConfigurationError` | Missing or invalid setup; fix configuration or dependencies. |
 | `ProviderError` | Provider/transport failure, or a sync lock already held. Inspect and retry through your job policy. |
 | `UnsafeSnapshot < ProviderError` | Scope mismatch or inability to establish a safe bootstrap/release snapshot. |
@@ -110,4 +126,4 @@ All gem errors inherit from `Bouncy::Error`:
 | `AuthenticationError` | SNS authorization/signature failure. |
 | `MalformedMessage` | Invalid SNS input. |
 
-Missing support notes and unsupported release destinations raise `ArgumentError`. Rails/database errors not recognized as connection outages are not silently swallowed. A successful local database transaction does not make remote provider operations atomic. Never display a recovery success message from a rescue branch.
+Missing support notes, unsupported release destinations and `Bouncy.hold` without a block raise `ArgumentError`. An address lock that waits too long raises `ActiveRecord::LockWaitTimeout`. Rails/database errors not recognized as connection outages are not silently swallowed. A successful local database transaction does not make remote provider operations atomic. Never display a recovery success message from a rescue branch.

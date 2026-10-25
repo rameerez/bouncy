@@ -84,7 +84,7 @@ module Bouncy
           raise AuthenticationError, "SNS topic is not authorized"
         end
 
-        suffix = { "aws" => "amazonaws.com", "aws-us-gov" => "amazonaws.com", "aws-cn" => "amazonaws.com.cn" }[parts[1]]
+        suffix = Ses::SNS_DOMAINS[parts[1]]
         uri = URI.parse(envelope.fetch("SigningCertURL"))
         unless suffix && uri.scheme == "https" && uri.host == "sns.#{settings.region}.#{suffix}" &&
                uri.port == 443 && !uri.userinfo && !uri.query && !uri.fragment &&

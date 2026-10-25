@@ -7,8 +7,17 @@ module Bouncy
       # caches Amazon's signing certificate, so a host can test its mounted receiver offline.
       # Topic authorization and certificate-URL checks still run, which is the point: a test
       # seam that skipped them would hide exactly the hole they exist to close.
+      #
+      # configuration_set names the SES configuration set that the interceptor stamps on every
+      # message (X-SES-CONFIGURATION-SET), so SES publishes that mail's events to the set's topic.
+      # The set also joins the sending-policy check. A blank name stamps nothing.
+      #
+      # subscription_confirmation picks how the receiver confirms an SNS subscription: :api calls
+      # sns:ConfirmSubscription with the signed token; :subscribe_url visits the signed
+      # SubscribeURL instead, for credentials without that grant.
       attr_accessor :region, :credentials, :topic_arns, :client, :sns_client, :sts_client, :sns_message_verifier,
-                    :identities, :configuration_sets, :all_sending_paths_listed
+                    :identities, :configuration_sets, :all_sending_paths_listed, :configuration_set,
+                    :subscription_confirmation
 
       def initialize
         @topic_arns = []
@@ -18,6 +27,7 @@ module Bouncy
         # check needs every sending identity and configuration set listed. This flag is the
         # installer's statement that the lists above are complete.
         @all_sending_paths_listed = false
+        @subscription_confirmation = :api
       end
     end
 
@@ -26,10 +36,17 @@ module Bouncy
     # stop the sending. Leave the threshold nil to keep soft bounces record-only.
     SOFT_BOUNCE_OCCURRENCE_LIMIT = 50
 
+    # require_fresh_sync: true enforces provider and webhook evidence only while a complete sync
+    # is fresh. false enforces it always, for an app that runs no sync job: on an SES account
+    # that other apps share, their suppressions stay out of this app's tables.
+    #
+    # on_notification is called with every SES notification, after its state commits and before
+    # the receiver answers. Unlike the after_* hooks it may raise: the receiver then answers 503,
+    # and SNS delivers the notification again.
     attr_accessor :provider, :scope, :interception, :record_deliveries,
                   :retention, :maximum_event_age, :stale_after, :after_block, :after_release,
                   :after_event, :adapter, :soft_bounce_threshold, :soft_bounce_window,
-                  :soft_bounce_block_for
+                  :soft_bounce_block_for, :require_fresh_sync, :on_notification
     attr_reader :ses
 
     def initialize
@@ -42,8 +59,10 @@ module Bouncy
       @soft_bounce_threshold = nil
       @soft_bounce_window = 30.days
       @soft_bounce_block_for = 30.days
+      @require_fresh_sync = true
       @ses = Ses.new
       @after_block = @after_release = @after_event = ->(_event) {}
+      @on_notification = ->(_notification) {}
     end
 
     # Occurrence times retained per address so the window can roll. Bounded either way: a
@@ -63,6 +82,13 @@ module Bouncy
       raise ConfigurationError, "scope must be at most 191 characters" if scope.to_s.length > 191
       raise ConfigurationError, "Only the SES provider is supported" unless provider == :ses || adapter
       raise ConfigurationError, "interception must be :log, :drop or :off" unless %i[log drop off].include?(interception)
+      raise ConfigurationError, "require_fresh_sync must be true or false" unless [true, false].include?(require_fresh_sync)
+      unless %i[api subscribe_url].include?(ses.subscription_confirmation)
+        raise ConfigurationError, "ses.subscription_confirmation must be :api or :subscribe_url"
+      end
+      unless ses.configuration_set.nil? || ses.configuration_set.is_a?(String)
+        raise ConfigurationError, "ses.configuration_set must be the name of an SES configuration set, or nil"
+      end
       unless maximum_event_age.positive? && retention >= maximum_event_age
         raise ConfigurationError, "retention must cover maximum_event_age, and both must be positive"
       end

@@ -5,11 +5,14 @@ module Bouncy
     module_function
 
     # Retry outside the transaction: PostgreSQL aborts a transaction on a unique violation.
+    # The address lock comes first, before any row lock: a sender inside Bouncy.hold sees this
+    # change either committed or not started.
     def change(email)
       key = Identity.normalize(email)
       attempts = 0
       begin
         Suppression.transaction(requires_new: true) do
+          AddressLock.claim!(key)
           row = Suppression.find_or_create_by!(scope: Bouncy.scope, email: key) do |record|
             record.provider = Bouncy.configuration.provider.to_s
           end

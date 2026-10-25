@@ -3,6 +3,11 @@
 module Bouncy
   module Providers
     class Ses < Base
+      # The SNS host domain of each AWS partition, for the certificate and SubscribeURL checks.
+      SNS_DOMAINS = { "aws" => "amazonaws.com", "aws-us-gov" => "amazonaws.com", "aws-cn" => "amazonaws.com.cn" }.freeze
+      # SNS answers a SubscribeURL visit with a short XML document.
+      CONFIRMATION_LIMIT = 64 * 1024
+
       def initialize(configuration = Bouncy.configuration)
         super()
         @configuration = configuration
@@ -70,8 +75,12 @@ module Bouncy
       def control(envelope) # rubocop:disable Naming/PredicateMethod -- Adapter operation with side effects.
         case envelope.fetch("Type")
         when "SubscriptionConfirmation"
-          request { sns_client.confirm_subscription(topic_arn: envelope.fetch("TopicArn"), token: envelope.fetch("Token")) }
-          Store.event!("subscription_confirmed", source: "webhook")
+          if @settings.subscription_confirmation == :subscribe_url
+            visit_subscribe_url(envelope)
+          else
+            request { sns_client.confirm_subscription(topic_arn: envelope.fetch("TopicArn"), token: envelope.fetch("Token")) }
+          end
+          Store.event!("subscription_confirmed", source: "webhook", details: { "via" => @settings.subscription_confirmation.to_s })
           true
         when "UnsubscribeConfirmation"
           Store.event!("subscription_unsubscribed", source: "webhook")
@@ -85,6 +94,11 @@ module Bouncy
         SesParser.new(@configuration).call(envelope)
       end
 
+      # The notification for config.on_notification. parse has already checked the message.
+      def notification(envelope)
+        Notification.new(JSON.parse(envelope.fetch("Message"), max_nesting: 20), sns_timestamp: envelope["Timestamp"])
+      end
+
       def doctor
         policy = policy_check
         { "scope" => @configuration.scope, "policy_verified" => policy.verified, "policy_reason" => policy.reason,
@@ -93,6 +107,39 @@ module Bouncy
       end
 
       private
+
+      # Confirms the subscription by visiting the SubscribeURL that SNS signed, so the credentials
+      # need no sns:ConfirmSubscription grant. Only an HTTPS URL on the topic's own regional SNS
+      # host is visited; any other URL is malformed for good. A transport failure or an answer
+      # other than 2xx is a ProviderError: the receiver answers 503, and SNS sends the
+      # confirmation again.
+      def visit_subscribe_url(envelope)
+        require "net/http"
+        uri = URI.parse(envelope.fetch("SubscribeURL"))
+        domain = SNS_DOMAINS[envelope.fetch("TopicArn").split(":")[1]]
+        unless domain && uri.is_a?(URI::HTTPS) && uri.host == "sns.#{@settings.region}.#{domain}" && uri.port == 443 &&
+               !uri.userinfo && !uri.fragment
+          raise MalformedMessage, "SubscribeURL is not on the topic's SNS host"
+        end
+
+        code = nil
+        Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 3, read_timeout: 5,
+                                            verify_mode: OpenSSL::SSL::VERIFY_PEER, max_retries: 0) do |http|
+          http.request(Net::HTTP::Get.new(uri.request_uri)) do |response|
+            code = response.code
+            size = 0
+            response.read_body do |chunk|
+              size += chunk.bytesize
+              raise ProviderError, "SNS confirmation response exceeds limit" if size > CONFIRMATION_LIMIT
+            end
+          end
+        end
+        raise ProviderError, "SNS did not confirm the subscription (HTTP #{code})" unless code.to_s.match?(/\A2\d\d\z/)
+      rescue URI::InvalidURIError
+        raise MalformedMessage, "SubscribeURL is not a URL"
+      rescue Timeout::Error, SocketError, IOError, SystemCallError, OpenSSL::SSL::SSLError
+        raise ProviderError, "SNS confirmation transport unavailable"
+      end
 
       def require_sdk(service)
         require "aws-sdk-#{service}"
@@ -160,6 +207,7 @@ module Bouncy
         end
 
         sets = @settings.configuration_sets.dup
+        sets << @settings.configuration_set if @settings.configuration_set.present?
         @settings.identities.each do |identity|
           response = request { ses.get_email_identity(email_identity: identity) }
           sets << response.configuration_set_name if response.configuration_set_name.present?

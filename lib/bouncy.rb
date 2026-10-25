@@ -141,6 +141,24 @@ module Bouncy
       end
     end
 
+    # Holds the address while the block runs, so no new block for it can commit between the
+    # app's own check and its send. Inside a transaction the hold lasts until the transaction
+    # ends. Returns the block's value. Unconfigured, it only runs the block.
+    #
+    #   Bouncy.hold(order.email) do
+    #     ReceiptMailer.with(order:).receipt.deliver_now unless Bouncy.blocked?(order.email)
+    #   end
+    def hold(email, &)
+      raise ArgumentError, "Bouncy.hold needs a block" unless block_given?
+
+      unless configured?
+        unconfigured!("hold")
+        return yield
+      end
+
+      AddressLock.hold(email, &)
+    end
+
     def unblocked
       previous = ActiveSupport::IsolatedExecutionState[:bouncy_unblocked]
       ActiveSupport::IsolatedExecutionState[:bouncy_unblocked] = true
@@ -169,10 +187,12 @@ require_relative "bouncy/suppression"
 require_relative "bouncy/event"
 require_relative "bouncy/status"
 require_relative "bouncy/status_set"
+require_relative "bouncy/address_lock"
 require_relative "bouncy/store"
 require_relative "bouncy/providers/base"
 require_relative "bouncy/providers/ses"
 require_relative "bouncy/providers/ses_parser"
+require_relative "bouncy/notification"
 require_relative "bouncy/ingestor"
 require_relative "bouncy/recovery"
 require_relative "bouncy/scope_lock"
@@ -180,6 +200,7 @@ require_relative "bouncy/reconciler"
 require_relative "bouncy/model"
 require_relative "bouncy/interceptor"
 require_relative "bouncy/webhook"
+require_relative "bouncy/body_limit"
 require_relative "bouncy/sync_job"
 require_relative "bouncy/prune_job"
 require_relative "bouncy/engine"

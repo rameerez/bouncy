@@ -70,4 +70,19 @@ class ModelAndJobsTest < BouncyTest
     Bouncy.configuration.retention = 1.day
     assert_raises(Bouncy::ConfigurationError) { Bouncy.scope }
   end
+
+  test "configuration rejects an unknown freshness rule, confirmation or configuration set" do
+    configuration = Bouncy.configuration
+    assert_equal [true, :api, nil], [configuration.require_fresh_sync, configuration.ses.subscription_confirmation, configuration.ses.configuration_set]
+    configuration.require_fresh_sync = "no"
+    assert_raises(Bouncy::ConfigurationError) { configuration.validate! }
+    configuration.require_fresh_sync = false
+    configuration.ses.subscription_confirmation = :visit
+    assert_raises(Bouncy::ConfigurationError) { configuration.validate! }
+    configuration.ses.subscription_confirmation = :subscribe_url
+    configuration.ses.configuration_set = :transactional
+    assert_raises(Bouncy::ConfigurationError) { configuration.validate! }
+    configuration.ses.configuration_set = "transactional"
+    assert configuration.validate!
+  end
 end

@@ -4,4 +4,4 @@ Please report suspected vulnerabilities privately through GitHub's security advi
 
 Bouncy's SNS receiver is a public write path. A valid AWS signature alone does not authorize the sender: configure exact topic ARNs and restrict the topic's publisher policy to the intended SES source account and identities. See [Amazon SES setup](guides/amazon-ses.md).
 
-The first release supports one account-level SES suppression scope. Hosts own tenant authorization, administrative recovery permissions and safe rendering of event diagnostics. Provider recovery may affect other apps using the same account and region.
+Bouncy supports one account-level SES suppression scope. Hosts own tenant authorization, administrative recovery permissions and safe rendering of event diagnostics. Provider recovery may affect other apps using the same account and region.

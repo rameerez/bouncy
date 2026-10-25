@@ -20,10 +20,11 @@ Replace the examples with your actual deployment. Set `all_sending_paths_listed`
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `provider` | `:ses` | SES is the only built-in provider in v0.1.0. |
+| `provider` | `:ses` | SES is the only built-in provider. |
 | `scope` | `nil` | `ses:<account-id>:<region>:account`; at most 191 characters. Must match the AWS caller and SES client region. |
 | `interception` | `:log` | `:log` previews dropping, `:drop` removes enforceable recipients, `:off` disables the interceptor. |
 | `stale_after` | `2.hours` | Freshness window for complete syncs and address observations. Keep it positive and longer than your sync interval. |
+| `require_fresh_sync` | `true` | `true` enforces provider and webhook evidence only while a complete sync is fresh. `false` enforces every recorded block with no sync, for an app that runs no `SyncJob`. |
 | `record_deliveries` | `false` | Record normalized per-recipient SES Delivery events when enabled and routed to the topic. Server acceptance is not inbox placement. |
 | `retention` | `90.days` | Delete events older than this by local creation time when the prune job runs. Does not delete state rows. |
 | `maximum_event_age` | `90.days` | Feedback older than this cannot apply a new restriction. Retention must be at least this long; both must be positive. |
@@ -33,9 +34,10 @@ Replace the examples with your actual deployment. Set `all_sending_paths_listed`
 | `after_event` | No-op lambda | Called with every newly committed event. |
 | `after_block` | No-op lambda | Called when an event records a transition to blocked. |
 | `after_release` | No-op lambda | Called for explicit `release` events, including local-only releases. |
+| `on_notification` | No-op lambda | Called with a `Bouncy::Notification` for every SES notification, after its state commits and before the receiver answers. A raise answers 503 so SNS retries. |
 | `adapter` | `nil` | Advanced injection point, primarily for tests. The internal adapter contract is not a promise of support for other providers. |
 
-Callbacks take one `Bouncy::Event`. They are best effort; see [hook semantics](operations.md#hooks-and-instrumentation). Read current settings through `Bouncy.configuration`. `Bouncy.configure` assigns settings; `Bouncy.configuration.validate!` explicitly checks the local configuration without calling AWS. It raises on an unset scope or invalid supported options; it does not verify credentials or sending policy.
+The `after_*` callbacks take one `Bouncy::Event`. They are best effort; see [hook semantics](operations.md#hooks-and-instrumentation). Read current settings through `Bouncy.configuration`. `Bouncy.configure` assigns settings; `Bouncy.configuration.validate!` explicitly checks the local configuration without calling AWS. It raises on an unset scope or invalid supported options; it does not verify credentials or sending policy.
 
 ## SES settings
 
@@ -49,12 +51,25 @@ All are under `config.ses`:
 | `identities` | `[]` | Every sending domain/address identity; default configuration sets are also checked. |
 | `configuration_sets` | `[]` | Every explicitly selected configuration set. Empty is valid if none are used. |
 | `all_sending_paths_listed` | `false` | Your assertion that the two lists are complete. Until true, policy verification cannot pass. |
+| `configuration_set` | `nil` | Configuration set that the interceptor stamps as `X-SES-CONFIGURATION-SET` on every message without one, in every interception mode. It joins the policy check; you need not repeat it in `configuration_sets`. Blank stamps nothing. |
+| `subscription_confirmation` | `:api` | `:api` confirms SNS subscriptions with `sns:ConfirmSubscription`. `:subscribe_url` visits the signed `SubscribeURL` instead and requires a 2xx answer. |
 | `client` | `nil` | Optional injected `Aws::SESV2::Client`. |
 | `sns_client` | `nil` | Optional injected `Aws::SNS::Client`. |
 | `sts_client` | `nil` | Optional injected `Aws::STS::Client`. |
 | `sns_message_verifier` | `nil` | Trusted signature-verifier replacement for offline tests. Keep the default in production. |
 
-Default clients use a 3-second open timeout, 10-second read timeout and SDK retry limit of 2. These are per-request settings, not an overall sync deadline. Injected clients own their credentials/timeouts; `ses.credentials` does not override them. The bounded SNS certificate downloader separately uses a 3-second open timeout, 5-second read timeout and no transport retries.
+Default clients use a 3-second open timeout, 10-second read timeout and SDK retry limit of 2. These are per-request settings, not an overall sync deadline. Injected clients own their credentials/timeouts; `ses.credentials` does not override them. The bounded SNS certificate downloader and the `SubscribeURL` visit separately use a 3-second open timeout, 5-second read timeout, no redirects and no transport retries.
+
+## Receiver body limit
+
+`Bouncy::BodyLimit` is Rack middleware, not a setting. Insert it first, with the path your app routes to the receiver:
+
+```ruby
+# config/application.rb
+config.middleware.insert_before 0, Bouncy::BodyLimit, path: "/bouncy/webhooks/ses", limit: 300.kilobytes
+```
+
+`path` defaults to `/bouncy/webhooks/ses` and `limit` to 300 KB. Requests to any path that starts with it, after repeated slashes are squeezed, read at most `limit + 1` bytes; a longer body answers 413. Other paths pass untouched. The receiver keeps its own 2 MiB limit.
 
 SDK gems remain host dependencies even when injecting clients. See [SES setup](amazon-ses.md) for credentials and the signature-verifier test example.
 

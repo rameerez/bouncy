@@ -21,6 +21,7 @@ module Bouncy
         raise MalformedMessage, "Unsupported SNS control type" unless envelope["Type"] == "Notification"
 
         adapter.parse(envelope).each { |event| Ingestor.new.call(event) }
+        return response(503) unless notified?(adapter, envelope)
       end
       response(200)
     rescue AuthenticationError
@@ -32,6 +33,20 @@ module Bouncy
     end
 
     private
+
+    # config.on_notification runs after the state committed, outside Bouncy's locks, and before
+    # the answer. A failure answers 503, so SNS delivers the notification again; the repeat
+    # deduplicates and calls the hook again.
+    def notified?(adapter, envelope)
+      return true unless adapter.respond_to?(:notification)
+
+      Bouncy.configuration.on_notification.call(adapter.notification(envelope))
+      true
+    rescue StandardError => e
+      ActiveSupport::Notifications.instrument("hook_error.bouncy", hook: :on_notification, error_class: e.class.name)
+      Rails.logger&.error("[bouncy] config.on_notification raised #{e.class.name}; answering 503 so SNS retries")
+      false
+    end
 
     def response(status)
       [status, { "content-type" => "text/plain", "cache-control" => "no-store" }, [Rack::Utils::HTTP_STATUS_CODES.fetch(status)]]
