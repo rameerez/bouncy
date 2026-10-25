@@ -114,28 +114,47 @@ module Bouncy
     module FixtureTransactions
       private
 
+      # A late pool's callback can still be running in another thread when teardown starts, and
+      # unsubscribing does not stop it. One lock per fixture covers the checks and the writes of
+      # every callback and teardown's clear, and teardown closes the registration under it
+      # before it unsubscribes: a callback that reaches the lock afterwards does nothing.
       def setup_transactional_fixtures
         super
+        @bouncy_fixture_guard = Mutex.new
+        @bouncy_fixture_closed = false
         @bouncy_fixture_connections = []
         mark_fixture_transactions
         @bouncy_fixture_subscriber = ActiveSupport::Notifications.subscribe("!connection.active_record") { mark_fixture_transactions }
       end
 
       def teardown_transactional_fixtures
+        @bouncy_fixture_guard&.synchronize do
+          @bouncy_fixture_closed = true
+          @bouncy_fixture_connections.each { |connection| GUARD.synchronize { FIXTURES.delete(connection) } }
+          @bouncy_fixture_connections.clear
+        end
         ActiveSupport::Notifications.unsubscribe(@bouncy_fixture_subscriber) if @bouncy_fixture_subscriber
-        Array(@bouncy_fixture_connections).each { |connection| GUARD.synchronize { FIXTURES.delete(connection) } }
-        @bouncy_fixture_connections = @bouncy_fixture_subscriber = nil
+        @bouncy_fixture_subscriber = nil
         super
       end
 
       def mark_fixture_transactions
-        Array(@fixture_connection_pools).each do |pool|
-          connection = pool.active_connection
-          next if connection.nil? || !connection.transaction_open? || @bouncy_fixture_connections.include?(connection)
+        @bouncy_fixture_guard.synchronize do
+          next if @bouncy_fixture_closed
 
-          GUARD.synchronize { FIXTURES[connection] = connection.current_transaction }
-          @bouncy_fixture_connections << connection
+          Array(@fixture_connection_pools).each do |pool|
+            connection = pool.active_connection
+            next if connection.nil? || !connection.transaction_open? || @bouncy_fixture_connections.include?(connection)
+
+            record_fixture_transaction(connection)
+          end
         end
+      end
+
+      # Runs under the fixture's lock, after the checks.
+      def record_fixture_transaction(connection)
+        GUARD.synchronize { FIXTURES[connection] = connection.current_transaction }
+        @bouncy_fixture_connections << connection
       end
     end
 

@@ -143,3 +143,75 @@ if ActiveRecord::TestFixtures::ClassMethods.method_defined?(:skip_transactional_
     end
   end
 end
+
+# A fixture test whose lifecycle the race test drives by hand.
+class DrivenFixtures < ActiveSupport::TestCase
+  include ActiveRecord::TestFixtures
+
+  self.use_transactional_tests = true
+
+  def driven = nil
+end
+
+unless ActiveRecord::Base.connection_db_config.database == ":memory:"
+  # A late pool's callback can still run in another thread when teardown starts. It must not
+  # leave a mark that outlives the fixtures, nor fail.
+  class FixtureTeardownRaceTest < BouncyTest
+    def teardown
+      Bouncy::Record.remove_connection if @own_pool
+      super
+    end
+
+    def wait_until_blocked(thread)
+      Timeout.timeout(5) { Thread.pass until thread.status == "sleep" || !thread.alive? }
+    end
+
+    test "teardown waits for a late-pool callback paused after its checks, and later callbacks do nothing" do
+      fixtures = DrivenFixtures.new("driven")
+      fixtures.before_setup
+      fixtures.assert(true)
+      paused = Queue.new
+      resume = Queue.new
+      fixtures.define_singleton_method(:record_fixture_transaction) do |connection|
+        paused << connection
+        resume.pop
+        super(connection)
+      end
+
+      worker = Thread.new do
+        Bouncy::Record.establish_connection(ActiveRecord::Base.connection_db_config)
+        :done
+      rescue StandardError => e
+        e
+      end
+      @own_pool = true
+      late = Timeout.timeout(5) { paused.pop }
+
+      teardown = Thread.new { fixtures.after_teardown }
+      wait_until_blocked(teardown)
+      resume << true
+      assert worker.join(10), "the callback finished"
+      assert teardown.join(10), "teardown finished"
+
+      assert_equal :done, worker.value, "the callback did not raise"
+      assert_nil Bouncy::AddressLock::FIXTURES[late], "no mark outlives the fixtures"
+      assert_empty fixtures.instance_variable_get(:@bouncy_fixture_connections)
+      fixtures.send(:mark_fixture_transactions)
+      assert_nil Bouncy::AddressLock::FIXTURES[late], "a callback that reaches the lock after teardown does nothing"
+
+      blocked = []
+      Bouncy.configuration.after_block = ->(event) { blocked << event.email }
+      address = "after-#{SecureRandom.hex(4)}@example.com"
+      Bouncy::Record.transaction(joinable: false) do
+        Bouncy.block!(address, note: "Hold")
+        assert_empty blocked, "production timing: the hook waits for the outer commit"
+      end
+      assert_equal [address], blocked
+    ensure
+      resume&.push(true)
+      worker&.join(10)
+      teardown&.join(10)
+      Bouncy::AddressLock::GUARD.synchronize { Bouncy::AddressLock::FIXTURES.delete(late) } if late
+    end
+  end
+end
