@@ -11,8 +11,11 @@ class TransactionalFixturesTest < ActiveSupport::TestCase
 
   self.use_transactional_tests = true
 
+  # Earlier tests leave rows behind; a blocked row would make block! report no new block.
   def setup
     super
+    Bouncy::Event.delete_all
+    Bouncy::Suppression.delete_all
     Bouncy.reset_configuration!
     Bouncy.configuration.scope = "ses:123456789012:us-east-1:account"
     Bouncy.configuration.adapter = FakeProvider.new
