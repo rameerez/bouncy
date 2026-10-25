@@ -230,6 +230,19 @@ class WebhookTest < BouncyTest
     refute_match(/ada@example.com|ben@example.com|bounceType/i, log)
   end
 
+  test "without a logger, refusals, hook failures and skipped jobs stay quiet" do
+    previous = Rails.logger
+    Rails.logger = nil
+    Bouncy.configuration.on_notification = ->(_notification) { raise "the app's hook failed" }
+    assert_equal 503, post(signed_envelope)
+    assert_equal 400, post("")
+    Bouncy.configuration.scope = nil
+    assert_nil Bouncy::SyncJob.perform_now
+    assert_nil Bouncy::PruneJob.perform_now
+  ensure
+    Rails.logger = previous
+  end
+
   test "a failed subscription confirmation logs the topic and the SubscribeURL host" do
     url = "https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription&TopicArn=#{TOPIC}&Token=fictional"
     confirmation = signed_envelope("Type" => "SubscriptionConfirmation", "Token" => "fictional", "SubscribeURL" => url)
