@@ -100,7 +100,7 @@ config.middleware.insert_before 0, Bouncy::BodyLimit, path: "/bouncy/webhooks/se
 
 Use the path your app routes to the receiver. The limit covers that path with a trailing slash or a format suffix, and also the full path when the app runs under a prefix; adjacent routes are untouched. The receiver keeps its own 2 MiB limit as well.
 
-The receiver logs one warning for each message it refuses, with the status, the reason and the topic ARN (or the `SubscribeURL` host of a failed confirmation), and never an address or the body. That line is how a dead subscription shows up in production:
+The receiver logs one warning for each message it refuses, with the status, the reason and the topic ARN (or the `SubscribeURL` host of a failed confirmation). The topic and host appear only when they pass strict SNS validation, and as `<invalid>` otherwise, so no address, token or other raw field of the body reaches the log. That line is how a dead subscription shows up in production:
 
 ```text
 [bouncy] refused an SNS message (401): SNS topic is not authorized; topic arn:aws:sns:us-east-1:999999999999:feedback

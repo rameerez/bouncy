@@ -8,6 +8,19 @@ module Bouncy
       # SNS answers a SubscribeURL visit with a short XML document.
       CONFIRMATION_LIMIT = 64 * 1024
 
+      # The SubscribeURL as a URI when it is HTTPS on the topic's own regional SNS host, port 443,
+      # with no userinfo and no fragment; nil for any other value.
+      def self.subscribe_uri(envelope, region)
+        uri = URI.parse(envelope["SubscribeURL"].to_s)
+        domain = SNS_DOMAINS[envelope["TopicArn"].to_s.split(":")[1]]
+        return unless domain && uri.is_a?(URI::HTTPS) && uri.host == "sns.#{region}.#{domain}" && uri.port == 443
+        return if uri.userinfo || uri.fragment
+
+        uri
+      rescue URI::InvalidURIError
+        nil
+      end
+
       def initialize(configuration = Bouncy.configuration)
         super()
         @configuration = configuration
@@ -115,12 +128,8 @@ module Bouncy
       # confirmation again.
       def visit_subscribe_url(envelope)
         require "net/http"
-        uri = URI.parse(envelope.fetch("SubscribeURL"))
-        domain = SNS_DOMAINS[envelope.fetch("TopicArn").split(":")[1]]
-        unless domain && uri.is_a?(URI::HTTPS) && uri.host == "sns.#{@settings.region}.#{domain}" && uri.port == 443 &&
-               !uri.userinfo && !uri.fragment
-          raise MalformedMessage, "SubscribeURL is not on the topic's SNS host"
-        end
+        uri = self.class.subscribe_uri(envelope, @settings.region)
+        raise MalformedMessage, "SubscribeURL is not on the topic's SNS host" unless uri
 
         code = nil
         Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 3, read_timeout: 5,
@@ -135,8 +144,6 @@ module Bouncy
           end
         end
         raise ProviderError, "SNS did not confirm the subscription (HTTP #{code})" unless code.to_s.match?(/\A2\d\d\z/)
-      rescue URI::InvalidURIError
-        raise MalformedMessage, "SubscribeURL is not a URL"
       rescue Timeout::Error, SocketError, IOError, SystemCallError, OpenSSL::SSL::SSLError
         raise ProviderError, "SNS confirmation transport unavailable"
       end

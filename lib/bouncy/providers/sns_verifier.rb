@@ -59,9 +59,20 @@ module Bouncy
       class BoundedVerifier < Aws::SNS::MessageVerifier
         private
 
-        # The SDK's download_pem checks the URL and the PEM format, and calls the bounded
-        # https_get below.
-        def pem(uri) = CERTIFICATES.fetch(uri.to_s) { download_pem(uri) }
+        # The SDK's download_pem checks the URL and the PEM framing, and calls the bounded
+        # https_get below. A certificate is cached only once it parses and carries the RSA key
+        # that SNS signs with; any other body is refused and never kept, so the next request
+        # fetches again at once.
+        def pem(uri) = CERTIFICATES.fetch(uri.to_s) { usable(download_pem(uri)) }
+
+        def usable(pem)
+          key = OpenSSL::X509::Certificate.new(pem).public_key
+          raise VerificationError, "The SNS signing certificate has no RSA key" unless key.is_a?(OpenSSL::PKey::RSA)
+
+          pem
+        rescue OpenSSL::X509::CertificateError, OpenSSL::PKey::PKeyError
+          raise VerificationError, "The SNS signing certificate does not parse"
+        end
 
         def https_get(uri, _failed_attempts = 0)
           body = +""

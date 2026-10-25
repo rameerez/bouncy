@@ -3,6 +3,7 @@
 require "test_helper"
 require "aws-sdk-sns"
 require "bouncy/providers/sns_verifier"
+require "support/signed_sns"
 
 class SnsVerifierTest < BouncyTest
   test "refuses an SDK that no longer exposes the certificate hooks it bounds" do
@@ -18,7 +19,7 @@ class SnsVerifierTest < BouncyTest
     downloads = []
     url = ->(index) { "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-#{index}.pem" }
     download = lambda do |verifier, index|
-      verifier.stub(:download_pem, ->(uri) { downloads << uri.to_s and "pem #{uri}" }) { verifier.send(:pem, URI(url.call(index))) }
+      verifier.stub(:download_pem, ->(uri) { downloads << uri.to_s and SignedSns::CERT.to_pem }) { verifier.send(:pem, URI(url.call(index))) }
     end
 
     17.times { |index| download.call(Bouncy::Providers::SnsVerifier::BoundedVerifier.new, index) }

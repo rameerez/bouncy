@@ -3,10 +3,16 @@
 module Bouncy
   class Webhook
     BODY_LIMIT = 2 * 1024 * 1024
+    METHODS = %w[GET HEAD PUT PATCH DELETE OPTIONS TRACE CONNECT].freeze
+    INVALID = "<invalid>"
+    TOPIC_ARN = /\Aarn:aws[a-z-]*:sns:[a-z]{2}(?:-[a-z]+)+-\d+:\d{12}:[A-Za-z0-9_-]{1,256}\z/
 
     def call(environment)
       method = environment["REQUEST_METHOD"]
-      return refuse(405, "method #{printable(method)} is not POST") unless method == "POST"
+      unless method == "POST"
+        shown = METHODS.include?(method) ? method : INVALID
+        return refuse(405, "method #{shown} is not POST")
+      end
 
       # An unconfigured receiver answers 503 so the provider retries later instead of
       # treating the endpoint as broken or, worse, as having accepted the notification.
@@ -39,7 +45,10 @@ module Bouncy
     private
 
     # One warning per refused message: how a dead subscription is found in production. It names
-    # the reason and where the message claims to come from, never an address or the body.
+    # the reason and where the message claims to come from. The message is not authenticated, so
+    # a topic is logged only when it has the strict SNS ARN syntax and a SubscribeURL host only
+    # when it passes the SNS host check; anything else is written as <invalid>. No raw field of
+    # the body is ever copied into the log.
     def refuse(status, reason, body = nil)
       Rails.logger&.warn("[bouncy] refused an SNS message (#{status}): #{reason}#{origin(body)}")
       response(status)
@@ -49,17 +58,17 @@ module Bouncy
       envelope = JSON.parse(body.to_s, max_nesting: 30)
       return "" unless envelope.is_a?(Hash)
 
-      topic = envelope["TopicArn"]
-      subscribe_url = envelope["SubscribeURL"] if envelope["Type"] == "SubscriptionConfirmation"
       parts = []
-      parts << "topic #{printable(topic)}" if topic.is_a?(String)
-      parts << "SubscribeURL host #{printable(URI.parse(subscribe_url).host)}" if subscribe_url.is_a?(String)
+      topic = envelope["TopicArn"] if envelope["TopicArn"].is_a?(String) && envelope["TopicArn"].match?(TOPIC_ARN)
+      parts << "topic #{topic || INVALID}" if envelope.key?("TopicArn")
+      if envelope["Type"] == "SubscriptionConfirmation" && envelope.key?("SubscribeURL")
+        uri = Providers::Ses.subscribe_uri(envelope, Bouncy.configuration.ses.region) if topic
+        parts << "SubscribeURL host #{uri&.host || INVALID}"
+      end
       parts.map { |part| "; #{part}" }.join
-    rescue JSON::ParserError, URI::InvalidURIError
+    rescue JSON::ParserError
       ""
     end
-
-    def printable(value) = value.to_s.gsub(/[^[:print:]]/, "?")[0, 256]
 
     # config.on_notification runs after the state committed, outside Bouncy's locks, and before
     # the answer. A failure answers 503, so SNS delivers the notification again; the repeat

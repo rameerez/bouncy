@@ -204,6 +204,53 @@ class WebhookTest < BouncyTest
     assert_requested :get, CERT_URL, times: 2
   end
 
+  test "a certificate that does not parse or has no RSA key is refused and never cached, so a valid one is fetched at once" do
+    ec_key = OpenSSL::PKey::EC.generate("prime256v1")
+    ec_certificate = OpenSSL::X509::Certificate.new.tap do |cert|
+      cert.version = 2
+      cert.serial = 3
+      cert.subject = cert.issuer = OpenSSL::X509::Name.parse("/CN=sns.us-east-1.amazonaws.com")
+      cert.public_key = ec_key
+      cert.not_before = Time.now - 3600
+      cert.not_after = Time.now + 86_400
+      cert.sign(ec_key, OpenSSL::Digest.new("SHA256"))
+    end
+    framed_garbage = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
+    stub_request(:get, CERT_URL).to_return({ body: framed_garbage }, { body: ec_certificate.to_pem }, { body: CERT.to_pem })
+
+    assert_equal 401, post(signed_envelope("MessageId" => "m-1")), "PEM framing without a certificate"
+    assert_equal 0, Bouncy::Providers::SnsVerifier::CERTIFICATES.size
+    assert_equal 401, post(signed_envelope("MessageId" => "m-2")), "a certificate without an RSA key"
+    assert_equal 0, Bouncy::Providers::SnsVerifier::CERTIFICATES.size
+    assert_equal 200, post(signed_envelope("MessageId" => "m-3")), "the valid certificate, fetched at once"
+    assert_requested :get, CERT_URL, times: 3
+    assert_equal 1, Bouncy::Providers::SnsVerifier::CERTIFICATES.size
+  end
+
+  test "hostile fields of an unauthenticated message are never copied into a refusal line" do
+    Bouncy.configuration.ses.subscription_confirmation = :subscribe_url
+    hostile_topic = "ada@example.com Token=fictional"
+    log = logged do
+      assert_equal 401, post(signed_envelope("TopicArn" => hostile_topic))
+      assert_equal 400, post(signed_envelope("TopicArn" => { "ada@example.com" => "fictional" }))
+      ["https://ada@example.com/?Token=fictional", "https://sns.us-east-1.amazonaws.com.ada.example.com/?Token=fictional",
+       "ada@example.com Token=fictional"].each do |subscribe_url|
+        assert_equal 400, post(signed_envelope("Type" => "SubscriptionConfirmation", "Token" => "fictional", "SubscribeURL" => subscribe_url))
+      end
+      assert_equal 401, post(signed_envelope("Type" => "SubscriptionConfirmation", "TopicArn" => hostile_topic, "Token" => "fictional",
+                                             "SubscribeURL" => "https://sns.us-east-1.amazonaws.com/?Token=fictional"))
+      assert_equal 405, Bouncy::Webhook.new.call("REQUEST_METHOD" => "ADA@EXAMPLE.COM").first
+    end
+    lines = log.lines.grep(/\[bouncy\] refused an SNS message/)
+    assert_equal 7, lines.size, log
+    assert_match(/topic <invalid>$/, lines[0])
+    assert_match(/topic <invalid>$/, lines[1])
+    lines[2, 3].each { |line| assert_match(/topic #{TOPIC}; SubscribeURL host <invalid>$/, line) }
+    assert_match(/topic <invalid>; SubscribeURL host <invalid>$/, lines[5])
+    assert_match(/method <invalid> is not POST/, lines[6])
+    refute_match(/example\.com|fictional|token=/i, log)
+  end
+
   test "every refusal logs one line with its reason and origin, and never an address or the body" do
     foreign = "arn:aws:sns:us-east-1:999999999999:feedback"
     log = logged do
