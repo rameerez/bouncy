@@ -59,11 +59,13 @@ class BodyLimitTest < BouncyTest
     assert_equal [200, ["0 0 false"]], [status, body]
   end
 
-  test "other paths are not read, and the limit and the path are configurable" do
-    input = CountingInput.new("x" * 10)
-    status, = request("/other", input)
-    assert_equal 200, status
-    assert_equal 10, input.bytes_read, "only the app read it"
+  test "other paths, adjacent routes included, are not read, and the limit and the path are configurable" do
+    ["/other", "/webhooks/ses-admin", "/webhooks/sesame", "/webhooks/ses/extra", "/webhooks", "/prefix/webhooks/ses"].each do |path|
+      input = CountingInput.new("x" * 10)
+      status, = request(path, input)
+      assert_equal 200, status, path
+      assert_equal 10, input.bytes_read, "only the app read #{path}"
+    end
 
     status, = request("/webhooks/ses", StringIO.new("x" * 11), limit: 10)
     assert_equal 413, status
@@ -73,6 +75,22 @@ class BodyLimitTest < BouncyTest
     assert_raises(ArgumentError) { Bouncy::BodyLimit.new(READ_ALL, limit: "300") }
     assert_raises(ArgumentError) { Bouncy::BodyLimit.new(READ_ALL, path: "/") }
     assert_raises(ArgumentError) { Bouncy::BodyLimit.new(READ_ALL, path: "webhooks/ses") }
+  end
+
+  test "an app mounted under a prefix is limited by its routed path or by its full path" do
+    limit = Bouncy::BodyLimit::DEFAULT_LIMIT
+    mounts = [["/app", "/webhooks/ses", "/webhooks/ses"], ["/app", "/webhooks/ses", "/app/webhooks/ses"],
+              ["/app/", "//webhooks/ses.json", "/app/webhooks/ses"]]
+    mounts.each do |script_name, path_info, configured|
+      input = CountingInput.new("x" * (limit + 10))
+      environment = Rack::MockRequest.env_for("/", method: "POST", input: input).merge("SCRIPT_NAME" => script_name, "PATH_INFO" => path_info)
+      status, = Bouncy::BodyLimit.new(READ_ALL, path: configured).call(environment)
+      assert_equal 413, status, [script_name, path_info, configured].inspect
+      assert_operator input.bytes_read, :<=, limit + 1
+    end
+    environment = Rack::MockRequest.env_for("/", method: "POST", input: StringIO.new("x" * (limit + 10)))
+    status, = Bouncy::BodyLimit.new(READ_ALL, path: "/app/webhooks/ses").call(environment.merge("SCRIPT_NAME" => "/other", "PATH_INFO" => "/webhooks/ses"))
+    assert_equal 200, status, "another mount's route is not this receiver"
   end
 
   test "in front of the mounted engine, a signed notification still reaches the receiver" do

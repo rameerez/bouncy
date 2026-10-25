@@ -9,6 +9,40 @@ class HoldMailer < ActionMailer::Base
   end
 end
 
+# Host models whose own transaction callbacks raise.
+class AfterCommitFailure < ActiveRecord::Base
+  self.table_name = "contacts"
+  after_commit { raise "the host's after_commit failed" }
+end
+
+class AfterRollbackFailure < ActiveRecord::Base
+  self.table_name = "contacts"
+  after_rollback { raise "the host's after_rollback failed" }
+end
+
+# Writes and holds inside host transactions whose callbacks raise.
+module RaisingCallbacks
+  def commit_with_a_raising_callback(write:, hold:)
+    assert_raises(RuntimeError) do
+      Bouncy::Suppression.transaction do
+        AfterCommitFailure.create!(email: "host@example.com")
+        Bouncy.block!(write, note: "Hold")
+        Bouncy.hold(hold) { :sent }
+      end
+    end
+  end
+
+  def roll_back_with_a_raising_callback(write:)
+    assert_raises(RuntimeError) do
+      Bouncy::Suppression.transaction do
+        AfterRollbackFailure.create!(email: "host@example.com")
+        Bouncy.block!(write, note: "Hold")
+        raise ActiveRecord::Rollback
+      end
+    end
+  end
+end
+
 # Bouncy.hold: the call shape of a sender that checks the address and sends in one step.
 class HoldTest < BouncyTest
   def setup
@@ -57,6 +91,16 @@ class HoldTest < BouncyTest
     assert Bouncy.blocked?("ada@example.com")
   end
 
+  test "PostgreSQL keys have 64 bits: two addresses that shared the old 28-bit key no longer do" do
+    first = "user22188@example.com"
+    second = "user30287@example.com"
+    old_key = ->(email) { Digest::SHA256.hexdigest("#{Bouncy.scope}\n#{email}")[0, 7].to_i(16) }
+    assert_equal old_key.call(first), old_key.call(second), "the pair collided under the old key"
+    keys = [first, second].map { |email| Bouncy::AddressLock.advisory_key(email) }
+    refute_equal(*keys)
+    assert(keys.all? { |key| key.between?(-(2**63), (2**63) - 1) })
+  end
+
   test "a check and a send inside the hold see the same state" do
     Bouncy.configuration.interception = :drop
     Bouncy.block!("ada@example.com", note: "Hold")
@@ -71,6 +115,8 @@ end
 # SQLite has one writer at a time: the hold is a shared lock on one file beside the database,
 # and every Bouncy write takes it exclusive until its transaction ends.
 class SqliteHoldTest < BouncyTest
+  include RaisingCallbacks
+
   def with_file_database
     connection = ActiveRecord::Base.connection
     Dir.mktmpdir("bouncy-hold") do |directory|
@@ -107,21 +153,58 @@ class SqliteHoldTest < BouncyTest
     end
   end
 
-  test "hooks run after the write released the address" do
+  test "hooks run after every write of their transaction released its address" do
     with_file_database do |path|
       seen = []
       Bouncy.configuration.after_block = ->(_event) { seen << lockable?(path, File::LOCK_EX) }
       Bouncy.configuration.after_event = ->(_event) { seen << lockable?(path, File::LOCK_EX) }
       Bouncy.block!("ada@example.com", note: "Hold")
-      Bouncy::Suppression.transaction { observe("ben@example.com") }
-      assert_equal [true] * 4, seen
+      Bouncy::Suppression.transaction do
+        Bouncy.block!("ben@example.com", note: "Hold")
+        observe("cleo@example.com")
+      end
+      assert_equal [true] * 6, seen
+    end
+  end
+
+  test "hooks of a write inside a hold run when the hold ends, also when the block raises" do
+    with_file_database do |path|
+      seen = []
+      Bouncy.configuration.after_block = ->(_event) { seen << [lockable?(path, File::LOCK_EX), Bouncy::AddressLock.holding?] }
+      Bouncy.hold("ada@example.com") do
+        Bouncy.hold("ada@example.com") { Bouncy.block!("ada@example.com", note: "Hold") }
+        assert_empty seen, "the outer hold is still open"
+      end
+      assert_raises(RuntimeError) { Bouncy.hold("ben@example.com") { Bouncy.block!("ben@example.com", note: "Hold") and raise "the send failed" } }
+      assert_equal [[true, false]] * 2, seen
+    end
+  end
+
+  test "a host after_commit or after_rollback that raises leaves no lock behind" do
+    with_file_database do |path|
+      commit_with_a_raising_callback(write: "ada@example.com", hold: "ben@example.com")
+      assert lockable?(path, File::LOCK_EX), "released at the commit, before the host's callback"
+      roll_back_with_a_raising_callback(write: "cleo@example.com")
+      assert lockable?(path, File::LOCK_EX), "released at the rollback, before the host's callback"
+      assert Bouncy.blocked?("ada@example.com")
+      refute Bouncy.blocked?("cleo@example.com")
+    end
+  end
+
+  test "a lock whose transaction end went unreported is settled before the next use" do
+    with_file_database do |path|
+      connection = ActiveRecord::Base.connection
+      Bouncy::AddressLock::DEFERRED[connection] = [Bouncy::AddressLock.take(connection, "ada@example.com", exclusive: true)]
+      refute lockable?(path, File::LOCK_SH)
+      Bouncy.hold("ben@example.com") { assert lockable?(path, File::LOCK_SH), "the stale exclusive lock is gone" }
+      assert lockable?(path, File::LOCK_EX)
     end
   end
 
   test "a release runs once, whichever transaction callback calls it" do
     with_file_database do |path|
       connection = ActiveRecord::Base.connection
-      release = Bouncy::AddressLock.acquire(connection, "ada@example.com", exclusive: false)
+      release = Bouncy::AddressLock.take(connection, "ada@example.com", exclusive: false)
       refute lockable?(path, File::LOCK_EX)
       2.times { release.call }
       assert lockable?(path, File::LOCK_EX)
@@ -132,8 +215,8 @@ class SqliteHoldTest < BouncyTest
   test "threads that share one connection share its lock, as a database session would" do
     with_file_database do |path|
       connection = ActiveRecord::Base.connection
-      release = Bouncy::AddressLock.acquire(connection, "ada@example.com", exclusive: true)
-      other = Thread.new { Bouncy::AddressLock.acquire(connection, "ada@example.com", exclusive: false).call }
+      release = Bouncy::AddressLock.take(connection, "ada@example.com", exclusive: true)
+      other = Thread.new { Bouncy::AddressLock.take(connection, "ada@example.com", exclusive: false).call }
       assert other.join(5), "a thread on the same connection does not wait for that connection"
       refute lockable?(path, File::LOCK_SH)
       release.call
@@ -162,6 +245,8 @@ if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
   # The lock commits for real across connections, so these tests use threads with their own
   # connections. Each read skips the query cache.
   class HoldConcurrencyTest < BouncyTest
+    include RaisingCallbacks
+
     def setup
       super
       ActionMailer::Base.deliveries.clear
@@ -264,11 +349,97 @@ if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
       assert blocked?("ana@example.com")
     end
 
+    # True when another connection can write to the address within five seconds.
+    def free?(email) = in_thread { Bouncy.block!(email, note: "Probe") }.join(5).present?
+
+    test "a hold inside the query cache still locks, every time" do
+      ActiveRecord::Base.cache do
+        Bouncy.hold("ana@example.com") { :first }
+        write = nil
+        Bouncy.hold("ana@example.com") do
+          write = in_thread { Bouncy.block!("ana@example.com", note: "Hold") }
+          assert_nil write.join(0.5), "the second hold took the lock too"
+        end
+        assert write.join(5)
+        Bouncy::ScopeLock.synchronize { :first }
+        Bouncy::ScopeLock.synchronize do
+          other = in_thread do
+            Bouncy::ScopeLock.synchronize { :second }
+          rescue Bouncy::ProviderError => e
+            e
+          end
+          assert_instance_of Bouncy::ProviderError, other.value, "the second sync took the scope lock too"
+        end
+      end
+    end
+
+    test "a host after_commit or after_rollback that raises leaves no lock behind" do
+      commit_with_a_raising_callback(write: "ana@example.com", hold: "bea@example.com")
+      assert free?("ana@example.com")
+      assert free?("bea@example.com")
+      roll_back_with_a_raising_callback(write: "cleo@example.com")
+      assert free?("cleo@example.com")
+    end
+
+    test "hooks run after every lock of their transaction and of an enclosing hold is gone" do
+      seen = []
+      Bouncy.configuration.after_block = ->(event) { seen << [event.email, free?(event.email == "ana@example.com" ? "bea@example.com" : "ana@example.com")] }
+      Bouncy::Suppression.transaction do
+        Bouncy.block!("ana@example.com", note: "Hold")
+        Bouncy.block!("bea@example.com", note: "Hold")
+      end
+      assert_equal [["ana@example.com", true], ["bea@example.com", true]], seen.first(2)
+      seen.clear
+      Bouncy.configuration.after_block = ->(event) { seen << [event.email, free?(event.email)] }
+      Bouncy.forget!("cleo@example.com") if Bouncy.blocked?("cleo@example.com")
+      Bouncy.hold("cleo@example.com") { Bouncy.block!("cleo@example.com", note: "Hold") }
+      assert_equal [["cleo@example.com", true]], seen.first(1)
+    end
+
+    test "inside a hold the check reads the latest state, even after an earlier read in the transaction" do
+      Bouncy.configuration.interception = :drop
+      read = Queue.new
+      go = Queue.new
+      sender = in_thread do
+        Bouncy::Suppression.transaction do
+          Bouncy::Suppression.where(email: %w[ana@example.com bea@example.com]).to_a # the snapshot starts here
+          read << true
+          go.pop
+          %w[ana@example.com bea@example.com].map do |email|
+            Bouncy.hold(email) do
+              [Bouncy.blocked?(email), Bouncy.statuses([email])[email].blocked?, HoldMailer.notice(email).deliver_now.smtp_envelope_to]
+            end
+          end
+        end
+      end
+      Bouncy.block!("bea@example.com", note: "Hold")
+      read.pop
+      Bouncy.block!("ana@example.com", note: "Hold")
+      Bouncy.release!("bea@example.com", at: :local)
+      go << true
+      assert_equal [[true, true, []], [false, false, ["bea@example.com"]]], sender.value
+      assert_equal [["bea@example.com"]], ActionMailer::Base.deliveries.map(&:to)
+    ensure
+      go << true
+    end
+
+    if ActiveRecord::Base.connection.adapter_name == "PostgreSQL"
+      test "two addresses that shared the old 28-bit key do not wait for each other" do
+        holding = Queue.new
+        done = Queue.new
+        in_thread { Bouncy.hold("user22188@example.com") { holding << true and done.pop } }
+        holding.pop
+        assert free?("user30287@example.com")
+      ensure
+        done << true
+      end
+    end
+
     if ActiveRecord::Base.connection.adapter_name.match?(/Mysql|Trilogy/)
       test "a named lock is released once, whichever transaction callback calls it" do
         connection = ActiveRecord::Base.connection
-        2.times { Bouncy::AddressLock.acquire(connection, "ana@example.com", exclusive: false) } # one session takes it twice
-        release = Bouncy::AddressLock.acquire(connection, "ana@example.com", exclusive: false)
+        2.times { Bouncy::AddressLock.take(connection, "ana@example.com", exclusive: false) } # one session takes it twice
+        release = Bouncy::AddressLock.take(connection, "ana@example.com", exclusive: false)
         2.times { release.call }
         write = in_thread { Bouncy.block!("ana@example.com", note: "Hold") }
         assert_nil write.join(0.3), "two takes remain, and a second call of one release did not end them"

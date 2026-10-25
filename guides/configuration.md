@@ -25,6 +25,7 @@ Replace the examples with your actual deployment. Set `all_sending_paths_listed`
 | `interception` | `:log` | `:log` previews dropping, `:drop` removes enforceable recipients, `:off` disables the interceptor. |
 | `stale_after` | `2.hours` | Freshness window for complete syncs and address observations. Keep it positive and longer than your sync interval. |
 | `require_fresh_sync` | `true` | `true` enforces provider and webhook evidence only while a complete sync is fresh. `false` enforces every recorded block with no sync, for an app that runs no `SyncJob`. |
+| `webhook_blocking` | `:cautious` with `require_fresh_sync`, `:strict` without | Which notifications block. `:cautious` blocks General/NoEmail bounces and complaints naming one recipient; the sync covers the rest. `:strict` blocks every Permanent bounce and every recipient a complaint names. See [bounce handling](bounce-handling.md#ses-event-classification). |
 | `record_deliveries` | `false` | Record normalized per-recipient SES Delivery events when enabled and routed to the topic. Server acceptance is not inbox placement. |
 | `retention` | `90.days` | Delete events older than this by local creation time when the prune job runs. Does not delete state rows. |
 | `maximum_event_age` | `90.days` | Feedback older than this cannot apply a new restriction. Retention must be at least this long; both must be positive. |
@@ -69,7 +70,7 @@ Default clients use a 3-second open timeout, 10-second read timeout and SDK retr
 config.middleware.insert_before 0, Bouncy::BodyLimit, path: "/bouncy/webhooks/ses", limit: 300.kilobytes
 ```
 
-`path` defaults to `/bouncy/webhooks/ses` and `limit` to 300 KB. Requests to any path that starts with it, after repeated slashes are squeezed, read at most `limit + 1` bytes; a longer body answers 413. Other paths pass untouched. The receiver keeps its own 2 MiB limit.
+`path` defaults to `/bouncy/webhooks/ses` and `limit` to 300 KB. A request to that path reads at most `limit + 1` bytes, and a longer body answers 413. The path matches after repeated slashes are squeezed, with an optional trailing slash or format suffix (`.json`), the forms a Rails route accepts. It is compared with `PATH_INFO` and with `SCRIPT_NAME + PATH_INFO`, so it holds when the app is mounted under a prefix. Other paths, adjacent routes such as `/bouncy/webhooks/ses-admin` included, pass untouched. The receiver keeps its own 2 MiB limit.
 
 SDK gems remain host dependencies even when injecting clients. See [SES setup](amazon-ses.md) for credentials and the signature-verifier test example.
 

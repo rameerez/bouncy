@@ -98,7 +98,7 @@ Cut oversized webhook bodies before Rails reads them. Rails reads a whole chunke
 config.middleware.insert_before 0, Bouncy::BodyLimit, path: "/bouncy/webhooks/ses" # limit: 300.kilobytes by default
 ```
 
-Use the path your app routes to the receiver. The receiver keeps its own 2 MiB limit as well.
+Use the path your app routes to the receiver. The limit covers that path with a trailing slash or a format suffix, and also the full path when the app runs under a prefix; adjacent routes are untouched. The receiver keeps its own 2 MiB limit as well.
 
 Follow the [SES setup guide](guides/amazon-ses.md) to connect bounce and complaint notifications to **`POST /bouncy/webhooks/ses`**. Deploy the allowlisted receiver before subscribing the SNS topic. Bouncy does not create or change your AWS configuration.
 
@@ -144,7 +144,7 @@ See the [API reference](guides/api.md) for all status readers, batch semantics a
 
 ### Stop repeated sends
 
-Three modes: `:log` records what would be dropped while allowing delivery, `:drop` removes enforceable blocked recipients, and `:off` disables interception. The other recipients keep their entries as written, display names included. A message with no recipient left is not sent: an Action Mailer `before_deliver` callback stops `deliver_now`, `deliver_now!`, `deliver_later` and `deliver_later!` alike, and `deliver_now` returns `false`.
+Three modes: `:log` records what would be dropped while allowing delivery, `:drop` removes enforceable blocked recipients, and `:off` disables interception. The other recipients keep their entries as written, display names included. Bouncy decides where Mail hands the message to the transport, after every interceptor and every mailer callback, so it judges the recipients the transport would really get. A message with no recipient left reaches no transport, whether you call `deliver_now`, `deliver_now!`, `deliver_later` or `deliver_later!`.
 
 Direct SDK sends and custom transports have [separate boundaries](guides/delivery.md).
 
@@ -167,6 +167,8 @@ end
 ```
 
 Every Bouncy write to that address waits for the block. Inside a transaction, the hold lasts until the transaction commits, so the record of the send commits first. Senders to one address do not wait for each other on PostgreSQL and SQLite; on MySQL they take turns. The lock needs no migration.
+
+The check inside the hold must read the latest committed state. On MySQL, Bouncy's reads inside a hold are locking reads, which do that at any isolation level. PostgreSQL does it at READ COMMITTED, its default. With PostgreSQL REPEATABLE READ or SERIALIZABLE, or with SQLite, take the hold before the transaction reads anything: their snapshot starts at the first read. Hooks of a write made inside a hold run when the hold ends.
 
 ### Help someone recover
 
@@ -251,6 +253,20 @@ config.require_fresh_sync = false
 ```
 
 Every recorded block then drops mail with no `Bouncy::SyncJob` at all. Nothing clears a webhook block on its own. `Bouncy.forget!` removes the local record; `Bouncy.release!` also reads and changes the account's suppression list, which other apps on a shared account rely on.
+
+Without a sync, the webhook must also decide alone which notifications block, so `config.webhook_blocking` defaults to `:strict`:
+
+| Notification | `:strict` (default without a sync) | `:cautious` (default with a sync) |
+|---|---|---|
+| Permanent bounce, `General` or `NoEmail` | Blocks | Blocks |
+| Permanent bounce, any other subtype (`OnAccountSuppressionList`, `Suppressed`, `UnsubscribedRecipient`, ... and future ones) | Blocks | Recorded; the sync reads the account list |
+| Transient or Undetermined bounce | Recorded only | Recorded only |
+| Complaint naming one recipient | Blocks | Blocks |
+| Complaint naming several recipients | Blocks every one | Recorded as candidates; the sync confirms |
+| Complaint with a subtype such as `OnAccountSuppressionList` | Blocks | Recorded; the sync reads the account list |
+| Complaint marked `not-spam` | Recorded only | Recorded only |
+
+A complaint cannot tell you who complained. In [Amazon's words](https://docs.aws.amazon.com/ses/latest/dg/notification-contents.html#complained-recipients): "Most ISPs remove the email address of the recipient who submitted the complaint from their complaint notification. For this reason, this list contains information about recipients who might have sent the complaint, based on the recipients of the original message and the ISP from which we received the complaint." No field says which case a notification is, so `:strict` blocks every recipient it names: mailing someone who reported you costs more than missing one. Send one message per recipient, as Amazon advises, and a complaint names only that recipient. Set `config.webhook_blocking` yourself to choose either rule with any sync setting.
 
 ## Documentation
 

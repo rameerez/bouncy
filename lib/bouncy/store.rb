@@ -9,6 +9,7 @@ module Bouncy
     # change either committed or not started.
     def change(email)
       key = Identity.normalize(email)
+      Record.connection_pool.with_connection { |connection| AddressLock.settle(connection) }
       attempts = 0
       begin
         Suppression.transaction(requires_new: true) do

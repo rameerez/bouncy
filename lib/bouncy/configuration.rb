@@ -43,6 +43,13 @@ module Bouncy
     # on_notification is called with every SES notification, after its state commits and before
     # the receiver answers. Unlike the after_* hooks it may raise: the receiver then answers 503,
     # and SNS delivers the notification again.
+    #
+    # webhook_blocking picks which notifications block an address. :cautious blocks General and
+    # NoEmail bounces and complaints that name one recipient, and leaves the rest to the sync,
+    # which reads the account list. :strict blocks every Permanent bounce, whatever its subtype,
+    # and every recipient a complaint names. It defaults to :cautious while a sync runs and to
+    # :strict when require_fresh_sync is false, because then nothing reads the account list.
+    attr_writer :webhook_blocking
     attr_accessor :provider, :scope, :interception, :record_deliveries,
                   :retention, :maximum_event_age, :stale_after, :after_block, :after_release,
                   :after_event, :adapter, :soft_bounce_threshold, :soft_bounce_window,
@@ -75,6 +82,8 @@ module Bouncy
 
     def soft_bounce_escalation? = soft_bounce_threshold.to_i.positive?
 
+    def webhook_blocking = @webhook_blocking || (require_fresh_sync == false ? :strict : :cautious)
+
     def configured? = !scope.to_s.strip.empty?
 
     def validate!
@@ -83,6 +92,7 @@ module Bouncy
       raise ConfigurationError, "Only the SES provider is supported" unless provider == :ses || adapter
       raise ConfigurationError, "interception must be :log, :drop or :off" unless %i[log drop off].include?(interception)
       raise ConfigurationError, "require_fresh_sync must be true or false" unless [true, false].include?(require_fresh_sync)
+      raise ConfigurationError, "webhook_blocking must be :cautious or :strict" unless %i[cautious strict].include?(webhook_blocking)
       unless %i[api subscribe_url].include?(ses.subscription_confirmation)
         raise ConfigurationError, "ses.subscription_confirmation must be :api or :subscribe_url"
       end

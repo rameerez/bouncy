@@ -12,10 +12,24 @@ class DeliveryMailer < ActionMailer::Base
   end
 end
 
-# A mailer whose own before_deliver callback adds a recipient after Bouncy's callback ran.
+# Mailers whose own before_deliver callback changes the recipients.
 class LateRecipientMailer < DeliveryMailer
   before_deliver { message.bcc = ["dan@example.com"] }
 end
+
+class ReplacingMailer < DeliveryMailer
+  before_deliver { message.to = [params.fetch(:replacement)] }
+end
+
+# A Mail interceptor registered after Bouncy's, which rewrites every recipient.
+module RewritingInterceptor
+  mattr_accessor :replacement
+
+  def self.delivering_email(message)
+    message.to = [replacement] if replacement
+  end
+end
+Mail.register_interceptor(RewritingInterceptor)
 
 # Every mail of every mailer goes through Bouncy: it names the SES configuration set when one
 # is configured, the blocked addresses leave To, Cc, Bcc and the SMTP envelope with the other
@@ -149,6 +163,48 @@ class MailDeliveryTest < BouncyTest
     mail = ActionMailer::Base.deliveries.sole
     assert_nil mail.bcc
     assert_equal ["ana@example.com"], mail.smtp_envelope_to
+  end
+
+  test "a host callback that replaces an allowed recipient with a blocked one reaches no transport" do
+    Bouncy.block!("dan@example.com", note: "Hold")
+
+    deliver_four_ways { ReplacingMailer.with(replacement: "Dan <dan@example.com>").notice(to: "ana@example.com") }
+
+    assert_empty ActionMailer::Base.deliveries, "no delivery method received an empty envelope"
+    assert_equal 4, Bouncy.events.where(kind: "skipped", email: "dan@example.com").count
+  end
+
+  test "a host callback that rewrites a blocked recipient to an allowed one sends to the allowed one" do
+    Bouncy.block!("dan@example.com", note: "Hold")
+
+    deliver_four_ways { ReplacingMailer.with(replacement: "ana@example.com").notice(to: "dan@example.com") }
+
+    assert_equal [["ana@example.com"]] * 4, ActionMailer::Base.deliveries.map(&:smtp_envelope_to), "Bouncy decides on what the transport gets"
+    assert_empty Bouncy.events.where(kind: "skipped")
+  end
+
+  test "an interceptor that runs after Bouncy's cannot slip a blocked recipient past it" do
+    Bouncy.block!("dan@example.com", note: "Hold")
+    RewritingInterceptor.replacement = "dan@example.com"
+
+    DeliveryMailer.notice(to: "ana@example.com").deliver_now!
+    Mail.new(from: "sender@example.com", to: "ana@example.com", body: "Hello") { delivery_method :test }.deliver
+
+    assert_empty ActionMailer::Base.deliveries
+  ensure
+    RewritingInterceptor.replacement = nil
+  end
+
+  test "the gate keeps the transport's settings and methods visible" do
+    mail = DeliveryMailer.notice(to: "ana@example.com").deliver_now
+    gate = mail.delivery_method
+    assert_instance_of Bouncy::Interceptor::Gate, gate
+    assert_instance_of Mail::TestMailer, gate.transport
+    assert_equal gate.transport.settings, gate.settings
+    assert_respond_to gate, :deliver!
+    assert_raises(NoMethodError) { gate.no_such_method }
+    DeliveryMailer.notice(to: "ana@example.com").message.tap { |message| 2.times { message.deliver } }
+    assert_equal 3, ActionMailer::Base.deliveries.size, "a second delivery of one message wraps nothing twice"
   end
 
   private

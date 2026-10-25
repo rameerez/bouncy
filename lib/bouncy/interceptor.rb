@@ -1,41 +1,50 @@
 # frozen_string_literal: true
 
 module Bouncy
-  # Checks the recipients of every mail before it goes out.
+  # Checks the recipients of every mail where Mail hands it to the transport.
   #
-  # Action Mailer's before_deliver callback runs the check first (deliverable?). When :drop
-  # leaves no recipient, the callback halts the delivery: deliver_now!, deliver_later! and their
-  # plain forms all stop, although Mail's bang delivery ignores perform_deliveries. Mail then
-  # calls the interceptor (delivering_email). It stamps the configuration-set header and checks
-  # again only a mail sent through Mail directly, or one whose recipients changed since.
+  # Mail calls delivering_email before each delivery. It stamps the configuration-set header and
+  # wraps the message's delivery method in a Gate. Mail's deliver and deliver! both end in that
+  # delivery method, after every interceptor and every Action Mailer callback, so the Gate
+  # decides on the recipients the transport would really get. In :drop mode it removes blocked
+  # recipients, and when none is left it does not call the transport: deliver_now!,
+  # deliver_later! and their plain forms all send nothing.
   class Interceptor
     CONFIGURATION_SET_HEADER = "X-SES-CONFIGURATION-SET"
     RECIPIENT_FIELDS = %i[to cc bcc].freeze
 
+    # The delivery method of a message that Bouncy checks. Mail builds it through
+    # Message#delivery_method(Gate, transport), its public way to set a delivery method.
+    class Gate
+      attr_reader :transport
+
+      def initialize(transport)
+        @transport = transport
+      end
+
+      def settings = transport.settings
+
+      def deliver!(message)
+        return if Interceptor.new.call(message) == :undeliverable
+
+        transport.deliver!(message)
+      end
+
+      def respond_to_missing?(name, include_private = false) = transport.respond_to?(name, include_private) || super
+      def method_missing(name, ...) = transport.respond_to?(name) ? transport.public_send(name, ...) : super
+    end
+
     class << self
       def delivering_email(message)
         stamp_configuration_set(message)
-        checked = message.instance_variable_get(:@bouncy_recipients)
-        message.instance_variable_set(:@bouncy_recipients, nil)
-        intercept(message) unless checked && checked == recipients_of(message)
-      end
-
-      # False when :drop removed every recipient, so the callback halts the delivery.
-      def deliverable?(message)
-        return false if intercept(message) == :undeliverable
-
-        message.instance_variable_set(:@bouncy_recipients, recipients_of(message))
-        true
-      end
-
-      private
-
-      def intercept(message)
         return if Bouncy.configuration.interception == :off || ActiveSupport::IsolatedExecutionState[:bouncy_unblocked]
         return Bouncy.unconfigured!("interception") unless Bouncy.configured?
 
-        new.call(message)
+        transport = message.delivery_method
+        message.delivery_method(Gate, transport) unless transport.is_a?(Gate)
       end
+
+      private
 
       # SES reads the set from this header and removes it before delivery. A mail that names its
       # own set keeps it. The header does not depend on the interception mode: turning
@@ -44,10 +53,6 @@ module Bouncy
         name = Bouncy.configuration.ses.configuration_set.presence
         message[CONFIGURATION_SET_HEADER] = name if name && message.header[CONFIGURATION_SET_HEADER].nil?
       end
-
-      def recipients_of(message)
-        [Array(message.smtp_envelope_to), *RECIPIENT_FIELDS.map { |field| message[field].to_s }]
-      end
     end
 
     # Returns :undeliverable when :drop removed every recipient, else nil.
@@ -55,7 +60,7 @@ module Bouncy
       envelope = Array(message.smtp_envelope_to).dup
       fields = RECIPIENT_FIELDS.to_h { |name| [name, addresses(message[name])] }
       keys = (envelope + fields.values.flatten.map(&:address)).filter_map { |entry| normalize(entry) }.uniq
-      rows = Bouncy.blocked.where(email: keys).to_a
+      rows = Bouncy.current_state(Bouncy.blocked).where(email: keys).to_a
       return if rows.empty?
 
       mode = Bouncy.configuration.interception

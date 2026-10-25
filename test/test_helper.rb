@@ -102,6 +102,12 @@ class BouncyTest < ActiveSupport::TestCase
     Bouncy::Providers::Entry.new(email: email, reason: reason, updated_at: time)
   end
 
+  # Delivers a plain Mail message the way Mail does, through every interceptor and the gate.
+  def deliver(message)
+    message.delivery_method(:test)
+    message.deliver
+  end
+
   def observe(email = "ada@example.com", kind: "hard_bounce", id: SecureRandom.uuid, time: Time.current, details: {})
     details = { "escalation_eligible" => true }.merge(details) if kind == "soft_bounce"
     Bouncy::Ingestor.new.call(Bouncy::Observation.new(email: email, kind: kind, provider_event_id: id,

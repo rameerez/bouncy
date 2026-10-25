@@ -339,8 +339,7 @@ class SyncIdempotencyTest < BouncyTest
     assert_equal evidence, Bouncy::Suppression.sole.provider_entries
     assert_equal blocked_at, Bouncy::Suppression.sole.provider_blocked_at
     Bouncy.configuration.interception = :drop
-    message = Mail.new(to: "ada@example.com", from: "sender@example.com", body: "test")
-    Bouncy::Interceptor.delivering_email(message)
+    message = deliver(Mail.new(to: "ada@example.com", from: "sender@example.com", body: "test"))
     assert message.perform_deliveries
     assert_equal ["ada@example.com"], message.smtp_envelope_to
     travel 1.second
@@ -350,7 +349,7 @@ class SyncIdempotencyTest < BouncyTest
     Bouncy.sync!
     refute Bouncy.status("ada@example.com").policy_unverified?
     assert_nil Bouncy.status("ada@example.com").policy_reason
-    Bouncy::Interceptor.delivering_email(message)
+    deliver(message)
     refute message.perform_deliveries
   end
 

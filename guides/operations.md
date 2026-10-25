@@ -80,7 +80,7 @@ end
 
 Implement the example jobs in the host. Callbacks receive a committed `Bouncy::Event`. `after_event` runs for every newly created event, including sync summaries and interception observations. `after_block` runs when `details["became_blocked"]` is true, not for every repeated bounce. `after_release` runs for explicit `release` events, including local-only releases; it does not run for `sync_released`. Use `after_event` with a kind check if you need to observe reconciliation releases.
 
-These hooks are best effort. Exceptions emit `hook_error.bouncy` with `hook` and `error_class`, and do not undo the event. They run after the commit, and after Bouncy released the address lock. A process can stop after commit before notification completes. Use idempotent consumers and a host outbox/reconciliation mechanism for guaranteed external work. Jobs should tolerate an event being pruned before execution.
+These hooks are best effort. Exceptions emit `hook_error.bouncy` with `hook` and `error_class`, and do not undo the event. They run after the commit, after Bouncy released every address lock of the transaction, and, for a write inside `Bouncy.hold`, when the hold ends. A process can stop after commit before notification completes. Use idempotent consumers and a host outbox/reconciliation mechanism for guaranteed external work. Jobs should tolerate an event being pruned before execution.
 
 `config.on_notification` is different: it runs synchronously in the receiver, with every SES notification, and its failure is not swallowed. A raise emits `hook_error.bouncy` with `hook: :on_notification`, logs the error class and answers 503, so SNS delivers the notification again. Keep it short and idempotent; see [SES notifications](api.md#ses-notifications).
 

@@ -142,8 +142,10 @@ class ScopeLockTest < BouncyTest
   test "programming errors inside interception are not fail open" do
     Bouncy.block!("ada@example.com", note: "Hold")
     Bouncy.stub(:blocked, -> { raise ActiveRecord::StatementInvalid, "bad SQL" }) do
-      assert_raises(ActiveRecord::StatementInvalid) do
-        Bouncy::Interceptor.delivering_email(Mail.new(to: "ada@example.com", from: "sender@example.com", body: "x"))
+      assert_no_difference -> { Mail::TestMailer.deliveries.size } do
+        assert_raises(ActiveRecord::StatementInvalid) do
+          deliver(Mail.new(to: "ada@example.com", from: "sender@example.com", body: "x"))
+        end
       end
     end
   end

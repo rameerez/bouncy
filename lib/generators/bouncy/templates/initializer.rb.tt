@@ -26,6 +26,10 @@ Bouncy.configure do |config|
   # sns:ConfirmSubscription.
   # config.ses.subscription_confirmation = :subscribe_url
 
+  # An app that runs no sync job enforces its webhook blocks alone. webhook_blocking then
+  # defaults to :strict: every Permanent bounce and every complained recipient blocks.
+  # config.require_fresh_sync = false
+
   # Every SES notification, after Bouncy recorded it. A raise makes SNS deliver it again.
   # config.on_notification = ->(notification) { }
 

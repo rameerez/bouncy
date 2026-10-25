@@ -79,6 +79,8 @@ module Bouncy
       end
 
       def classify(type, data)
+        return strict_classification(type, data) if @configuration.webhook_blocking == :strict && %w[Bounce Complaint].include?(type)
+
         case type
         when "Bounce"
           case data["bounceSubType"]
@@ -106,6 +108,24 @@ module Bouncy
         when "Rendering Failure", "RenderingFailure" then %w[rendering_failure message]
         else %w[ignored unsupported_type]
         end
+      end
+
+      # config.webhook_blocking = :strict: nothing reads the account list, so every Permanent
+      # bounce blocks, whatever its subtype, and so does every recipient a complaint names.
+      # SES cannot say which one complained: most ISPs remove that address, and SES lists the
+      # recipients who might have sent the complaint. Undetermined and Transient bounces stay
+      # record-only, and a not-spam report says the opposite of a complaint.
+      def strict_classification(type, data)
+        if type == "Bounce"
+          return ["hard_bounce", data["bounceSubType"].presence || "unspecified"] if data["bounceType"] == "Permanent"
+
+          return ["soft_bounce", data["bounceSubType"]] if %w[Transient Undetermined].include?(data["bounceType"])
+
+          return %w[unknown unrecognized_bounce]
+        end
+        return %w[ignored not_spam] if data["complaintFeedbackType"] == "not-spam"
+
+        ["complaint", data["complaintSubType"].presence || "named"]
       end
     end
   end

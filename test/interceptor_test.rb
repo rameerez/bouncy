@@ -40,11 +40,10 @@ class InterceptorTest < BouncyTest
 
   test "all blocked recipients prevent normal delivery" do
     Bouncy.configuration.interception = :drop
-    delivery = ExampleMailer.notice(to: "ada@example.com")
-    assert_equal false, delivery.deliver_now, "the before_deliver callback halts the delivery"
+    message = ExampleMailer.notice(to: "ada@example.com").deliver_now
     assert_empty ActionMailer::Base.deliveries
-    assert_empty delivery.message.smtp_envelope_to
-    refute delivery.message.perform_deliveries
+    assert_empty message.smtp_envelope_to
+    refute message.perform_deliveries
   end
 
   test "registered interceptor runs on deliver later when the job executes" do
@@ -55,8 +54,9 @@ class InterceptorTest < BouncyTest
 
   test "bang delivery stops too although Mail's deliver! ignores perform deliveries" do
     Bouncy.configuration.interception = :drop
-    assert_equal false, ExampleMailer.notice(to: "ada@example.com").deliver_now!
-    assert_empty ActionMailer::Base.deliveries
+    message = ExampleMailer.notice(to: "ada@example.com").deliver_now!
+    assert_empty ActionMailer::Base.deliveries, "the transport is not called"
+    assert_empty message.smtp_envelope_to
     assert_equal 1, Bouncy.events.where(kind: "skipped").count
   end
 
@@ -88,7 +88,7 @@ class InterceptorTest < BouncyTest
     Bouncy.configuration.interception = :drop
     assert_equal ["ada@example.com"], ExampleMailer.notice(to: "ada@example.com").deliver_now.to
     Bouncy.sync!
-    assert_equal false, ExampleMailer.notice(to: "ada@example.com").deliver_now
+    assert_empty ExampleMailer.notice(to: "ada@example.com").deliver_now.smtp_envelope_to
     travel 3.hours
     assert_equal ["ada@example.com"], ExampleMailer.notice(to: "ada@example.com").deliver_now.to
     assert_equal 2, ActionMailer::Base.deliveries.size
@@ -102,7 +102,7 @@ class InterceptorTest < BouncyTest
     ExampleMailer.notice(to: "ada@example.com").deliver_now
     assert Bouncy.events.where(kind: "skipped").sole.details["would_drop"], "log mode previews the drop"
     Bouncy.configuration.interception = :drop
-    assert_equal false, ExampleMailer.notice(to: "ada@example.com").deliver_now
+    assert_empty ExampleMailer.notice(to: "ada@example.com").deliver_now.smtp_envelope_to
     assert_equal ["ben@example.com"], ExampleMailer.notice(to: ["ada@example.com", "ben@example.com"]).deliver_now.smtp_envelope_to
     assert_equal 2, ActionMailer::Base.deliveries.size
     assert_nil Bouncy.last_sync, "nothing read the provider list"

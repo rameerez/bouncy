@@ -12,11 +12,11 @@ No User record is needed. Optional `bouncy :email` model integration adds predic
 
 Start with [SES setup](amazon-ses.md). Both SES SMTP and Action Mailer SDK delivery can use the same management API mirror. API credentials are separate from SMTP credentials. Import historical restrictions before enabling delivery interception.
 
-Webhooks handle new events promptly; recurring full sync covers prior history, shared-account changes, missed notifications and console releases. Neither mechanism proves every mailbox is reachable. Soft bounces are record-only unless you configure a threshold, an ordinary complaint blocks locally only when it names a single recipient, and message-size failures never globally invalidate an address. Suppression-list refusal notices are recorded separately from new complaints.
+Webhooks handle new events promptly; recurring full sync covers prior history, shared-account changes, missed notifications and console releases. Neither mechanism proves every mailbox is reachable. Soft bounces are record-only unless you configure a threshold, and message-size failures never globally invalidate an address. While a sync runs, an ordinary complaint blocks locally only when it names a single recipient, and suppression-list refusal notices are recorded separately from new complaints. Without a sync, `config.webhook_blocking` is `:strict`: see the next section.
 
 ## SES event classification
 
-The adapter supports identity `notificationType` and configuration-set `eventType` envelopes. It records the normalized kind separately from the provider subtype:
+The adapter supports identity `notificationType` and configuration-set `eventType` envelopes. It records the normalized kind separately from the provider subtype. With `config.webhook_blocking = :cautious`, the default while a sync runs:
 
 | SES feedback | Local kind / effect |
 |---|---|
@@ -34,11 +34,22 @@ The adapter supports identity `notificationType` and configuration-set `eventTyp
 | Reject / Rendering Failure | Addressless `reject` / `rendering_failure` event; no global address restriction. |
 | Other event types | `ignored`; no open/click tracking or subscription handling. |
 
+With `config.webhook_blocking = :strict`, the default when `require_fresh_sync` is `false`, nothing reads the account list, so the webhook decides alone:
+
+| SES feedback | Local kind / effect |
+|---|---|
+| Permanent bounce, any subtype (`General`, `NoEmail`, `Suppressed`, `OnAccountSuppressionList`, `OnTenantSuppressionList`, `UnsubscribedRecipient`, `EmailValidationSuppressed`, a missing or future one) | `hard_bounce`; records a webhook-derived block. The subtype stays in the event's `provider_reason`. |
+| Transient or Undetermined bounce | `soft_bounce`; record-only, as above. An undetermined bounce can come from a mailbox that works tomorrow, and nothing would lift its block. |
+| Complaint, with or without a subtype | `complaint`; every named recipient is blocked. The event keeps `certainty`: `confirmed` for one named recipient, `candidate` for several. |
+| Complaint marked `not-spam` | `ignored`, as above. |
+
+SES cannot say who complained. Its [documentation](https://docs.aws.amazon.com/ses/latest/dg/notification-contents.html#complained-recipients) states: "Most ISPs remove the email address of the recipient who submitted the complaint from their complaint notification. For this reason, this list contains information about recipients who might have sent the complaint, based on the recipients of the original message and the ISP from which we received the complaint." No field tells a named complainer from a list that SES worked out, so `:strict` blocks every listed recipient rather than risk mailing the one who reported you.
+
 The receiving server's acceptance is not evidence of inbox placement. See [AWS's notification fields](https://docs.aws.amazon.com/ses/latest/dg/notification-contents.html) for provider payload definitions.
 
 Invalid recipients cannot acquire a hold. Old, future-dated (more than five minutes ahead), out-of-order blocking feedback and feedback fenced by a release are retained with `details["ignored_for_policy"]` rather than applying a new restriction. Soft events can arrive out of order within their active window. Retries use a dedupe identity that includes scope, provider, feedback ID, kind and recipient.
 
-Blocking evidence is separate from enforcement: even a confirmed hard bounce requires a fresh authoritative sync for provider-derived interception. Manual and active soft holds are independent local policy. See [delivery](delivery.md).
+Blocking evidence is separate from enforcement: even a confirmed hard bounce requires a fresh authoritative sync for provider-derived interception, unless `require_fresh_sync` is `false`. Manual and active soft holds are independent local policy. See [delivery](delivery.md).
 
 ## Repeated soft bounces
 

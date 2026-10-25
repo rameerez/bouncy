@@ -8,34 +8,39 @@ module Bouncy
   # A sender takes the shared side with Bouncy.hold, around its own check and its send. Every
   # Bouncy write to an address (webhook, sync, block!, release!) takes the exclusive side first,
   # until its transaction ends. A new block therefore commits before the sender's check or after
-  # its send, never between them. Inside a transaction, a hold also lasts until that transaction
-  # ends, so it covers the commit that records the send.
+  # its send, never between them. Inside a transaction, a hold lasts until that transaction ends.
   #
-  # PostgreSQL uses advisory locks, and senders to one address do not wait for each other.
-  # MySQL's named locks have no shared mode, so there senders to one address take turns. SQLite
-  # has one writer at a time, and uses one shared or exclusive file lock beside the database.
+  # PostgreSQL holds transaction-level advisory locks, which it releases itself at the commit
+  # or the rollback. MySQL named locks and SQLite file locks belong to the connection; Bouncy
+  # releases them when the transaction.active_record event reports the end of the outermost
+  # transaction. Rails reports it right after the COMMIT or ROLLBACK, before any after_commit or
+  # after_rollback callback, so a callback that raises cannot keep a lock.
+  #
+  # Hooks never run inside a lock: writes release theirs at the commit, before the hooks, and
+  # the hooks of a write inside a hold wait until the hold ends.
   module AddressLock
-    # PostgreSQL's two-key form, so these keys stay apart from an app's one-key advisory locks
-    # and from Bouncy's scope lock.
-    NAMESPACE = 0x626f756e # "boun"
-
     FileHold = Struct.new(:guard, :file, :mode, :holders)
     FILE_LOCKS = ObjectSpace::WeakKeyMap.new
-    FILE_LOCKS_GUARD = Mutex.new
+    DEFERRED = ObjectSpace::WeakKeyMap.new
+    GUARD = Mutex.new
 
     module_function
 
-    def hold(email, &)
+    def hold(email)
       key = Identity.normalize(email)
       Record.connection_pool.with_connection do |connection|
-        if postgresql?(connection)
-          hold_advisory(connection, key, &)
-        else
-          release = acquire(connection, key, exclusive: false)
+        settle(connection)
+        release = take(connection, key, exclusive: false)
+        depth = ActiveSupport::IsolatedExecutionState[:bouncy_holds].to_i
+        ActiveSupport::IsolatedExecutionState[:bouncy_holds] = depth + 1
+        begin
+          yield
+        ensure
+          ActiveSupport::IsolatedExecutionState[:bouncy_holds] = depth
           begin
-            yield
+            until_transaction_end(connection, release)
           ensure
-            at_transaction_end(&release)
+            run_pending_hooks if depth.zero?
           end
         end
       end
@@ -46,46 +51,62 @@ module Bouncy
     def claim!(email)
       key = Identity.normalize(email)
       Record.connection_pool.with_connection do |connection|
-        if postgresql?(connection)
-          connection.execute("SELECT pg_advisory_xact_lock(#{NAMESPACE}, #{advisory_key(key)})")
-        else
-          at_transaction_end(&acquire(connection, key, exclusive: true))
-        end
+        until_transaction_end(connection, take(connection, key, exclusive: true))
       end
     end
 
-    # A transaction-level lock inside a transaction: PostgreSQL releases it at the commit or the
-    # rollback, also when a failed statement aborted the transaction. Outside a transaction, a
-    # session lock for the block.
-    def hold_advisory(connection, key)
-      arguments = "#{NAMESPACE}, #{advisory_key(key)}"
-      if connection.transaction_open?
-        connection.execute("SELECT pg_advisory_xact_lock_shared(#{arguments})")
-        return yield
-      end
+    def holding? = ActiveSupport::IsolatedExecutionState[:bouncy_holds].to_i.positive?
 
-      connection.execute("SELECT pg_advisory_lock_shared(#{arguments})")
-      begin
-        yield
-      ensure
-        connection.execute("SELECT pg_advisory_unlock_shared(#{arguments})")
-      end
+    # Runs a hook now, or after the execution's outermost hold when one is open.
+    def after_holds(&hook)
+      return hook.call unless holding?
+
+      (ActiveSupport::IsolatedExecutionState[:bouncy_pending_hooks] ||= []) << hook
     end
 
-    # Takes the MySQL or SQLite lock now and returns the block that releases it.
-    def acquire(connection, key, exclusive:)
+    def run_pending_hooks
+      hooks = ActiveSupport::IsolatedExecutionState[:bouncy_pending_hooks]
+      ActiveSupport::IsolatedExecutionState[:bouncy_pending_hooks] = nil
+      hooks&.each(&:call)
+    end
+
+    # Releases what an ended transaction left behind, in case Rails never reported its end.
+    def settle(connection)
+      return if connection.transaction_open?
+
+      release_deferred(connection)
+    end
+
+    # Takes the lock now and returns what releases it, or nil when the database releases it.
+    def take(connection, key, exclusive:)
       case connection.adapter_name
-      when /Mysql|Trilogy/i then acquire_named(connection, key)
-      when "SQLite" then acquire_file(connection, exclusive ? File::LOCK_EX : File::LOCK_SH)
+      when "PostgreSQL" then take_advisory(connection, key, exclusive)
+      when /Mysql|Trilogy/i then take_named(connection, key)
+      when "SQLite" then take_file(connection, exclusive ? File::LOCK_EX : File::LOCK_SH)
       else raise ConfigurationError, "Bouncy supports PostgreSQL, MySQL and SQLite"
       end
     end
 
+    # Inside a transaction: a transaction-level lock, released by PostgreSQL at the commit or
+    # the rollback, also when a failed statement aborted the transaction. Outside one: a session
+    # lock for the block. The key is a signed 64-bit hash of the scope and the address.
+    def take_advisory(connection, key, exclusive)
+      shared = exclusive ? "" : "_shared"
+      if connection.transaction_open?
+        connection.execute("SELECT pg_advisory_xact_lock#{shared}(#{advisory_key(key)})")
+        return
+      end
+
+      connection.execute("SELECT pg_advisory_lock#{shared}(#{advisory_key(key)})")
+      -> { connection.execute("SELECT pg_advisory_unlock#{shared}(#{advisory_key(key)})") }
+    end
+
     # GET_LOCK waits as long as an InnoDB row lock would. A session can take the same name again;
-    # each take needs its own release.
-    def acquire_named(connection, key)
+    # each take needs its own release. Both statements skip the query cache: a cached GET_LOCK
+    # would answer 1 without locking.
+    def take_named(connection, key)
       name = connection.quote(Digest::SHA256.hexdigest("bouncy:address:#{connection.pool.db_config.database}:#{Bouncy.scope}:#{key}"))
-      acquired = connection.select_value("SELECT GET_LOCK(#{name}, @@innodb_lock_wait_timeout)")
+      acquired = connection.uncached { connection.select_value("SELECT GET_LOCK(#{name}, @@innodb_lock_wait_timeout)") }
       raise ActiveRecord::LockWaitTimeout, "Bouncy could not lock an address in time" unless acquired.to_i == 1
 
       released = false
@@ -93,7 +114,7 @@ module Bouncy
         next if released
 
         released = true
-        connection.select_value("SELECT RELEASE_LOCK(#{name})")
+        connection.uncached { connection.select_value("SELECT RELEASE_LOCK(#{name})") }
       rescue ActiveRecord::ActiveRecordError
         # A broken connection ends its session, and the server releases the session's locks.
         nil
@@ -104,8 +125,8 @@ module Bouncy
     # session. A connection that already holds the file reuses its handle: a write inside its
     # own hold upgrades the lock to exclusive instead of waiting for itself. Threads that share
     # one connection, as Rails tests do, share its lock too.
-    def acquire_file(connection, mode)
-      held = FILE_LOCKS_GUARD.synchronize { FILE_LOCKS[connection] ||= FileHold.new(Mutex.new, nil, nil, 0) }
+    def take_file(connection, mode)
+      held = GUARD.synchronize { FILE_LOCKS[connection] ||= FileHold.new(Mutex.new, nil, nil, 0) }
       held.guard.synchronize do
         if held.file.nil?
           # The handle stays open while the lock is held; the last release closes it.
@@ -141,15 +162,40 @@ module Bouncy
       "#{File.expand_path(database)}.bouncy-addresses.lock"
     end
 
-    # Runs the block when the current transaction commits or rolls back, or now when no
-    # transaction is open. A savepoint that commits hands both callbacks to its parent.
-    def at_transaction_end(&)
-      transaction = Record.current_transaction
-      transaction.after_commit(&)
-      transaction.after_rollback(&)
+    # Releases now outside a transaction. Inside one, keeps the release for the end of the
+    # outermost transaction; the transaction is materialized first, so Rails reports its end.
+    def until_transaction_end(connection, release)
+      return unless release
+      return release.call unless connection.transaction_open?
+
+      connection.materialize_transactions
+      GUARD.synchronize { (DEFERRED[connection] ||= []) << release }
     end
 
-    def advisory_key(key) = Digest::SHA256.hexdigest("#{Bouncy.scope}\n#{key}")[0, 7].to_i(16)
-    def postgresql?(connection) = connection.adapter_name == "PostgreSQL"
+    # Rails pops a committed transaction before it reports the commit, and reports a rollback
+    # before it pops the transaction. :restart reports a savepoint that continues.
+    def transaction_ended(payload)
+      connection = payload[:connection]
+      return unless connection && GUARD.synchronize { DEFERRED.key?(connection) }
+
+      outermost = case payload[:outcome]
+                  when :commit then connection.open_transactions.zero?
+                  when :rollback then connection.open_transactions <= 1
+                  when :incomplete then true
+                  else false
+                  end
+      release_deferred(connection) if outermost
+    end
+
+    def release_deferred(connection)
+      releases = GUARD.synchronize { DEFERRED.delete(connection) }
+      releases&.each(&:call)
+    end
+
+    def advisory_key(key) = Digest::SHA256.digest("bouncy:address\n#{Bouncy.scope}\n#{key}").unpack1("q>")
   end
+
+  # Subscribed when the gem loads: Rails gives each transaction the subscribers that exist when
+  # the transaction starts, so a later subscription would miss the transaction that needs it.
+  ActiveSupport::Notifications.subscribe("transaction.active_record") { |*, payload| AddressLock.transaction_ended(payload) }
 end

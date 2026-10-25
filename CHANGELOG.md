@@ -13,12 +13,15 @@ Eight features that apps need to replace a hand-rolled SES integration with Boun
 - `config.on_notification` receives every SES notification synchronously (`type`, `recipients`, `message_id`, `occurred_at`, `tags`, `raw`) after its state commits and before the receiver answers, so an app can track its own Send and Delivery events, and a raise answers 503 so that SNS delivers again; the `after_*` hooks are unchanged.
 - `config.ses.subscription_confirmation = :subscribe_url` confirms an SNS subscription by visiting the signed `SubscribeURL` on the topic's own SNS host and answers 503 unless that visit gets a 2xx, so credentials without `sns:ConfirmSubscription` can confirm; the default `:api` is unchanged.
 - `config.require_fresh_sync = false` lets a webhook block drop mail with no sync at all, so an app on an SES account that other apps share need not mirror their suppression lists; the default `true` keeps the 0.1 rule.
+- `config.webhook_blocking = :strict` blocks every Permanent bounce, whatever its subtype, and every recipient a complaint names, because without a sync nothing else reads the account list and a complaint does not say who complained; it is the default when `require_fresh_sync` is `false`, and `:cautious`, the 0.1 rule, stays the default while a sync runs.
 - `Bouncy::BodyLimit` is Rack middleware (300 KB by default, configurable) that cuts the receiver's body before Rails reads a whole chunked body or parses it for its log; the receiver's own 2 MiB limit stays.
 
 ### Changed
 
-- An Action Mailer `before_deliver` callback stops a message that `:drop` left with no recipient, so `deliver_now!` and `deliver_later!` send nothing either, and a halted `deliver_now` returns `false` instead of the message.
+- The recipient check moved to the delivery method that Mail calls after every interceptor and mailer callback, so a message that `:drop` left with no recipient reaches no transport, `deliver_now!` and `deliver_later!` included, and a recipient that a later callback or interceptor adds is checked too.
 - The interceptor keeps each remaining To, Cc, Bcc and SMTP envelope entry as written, display name included, because it looks up only the entry's bare address.
+- The `after_*` hooks run after Bouncy released every address lock of their transaction, and after the enclosing `Bouncy.hold`, so a hook never runs while Bouncy holds an address.
+- The sync's scope lock reads its answer without the query cache, so a second sync in one cached request cannot take the lock without locking.
 
 ## [0.1.0] - 2026-09-09
 

@@ -84,7 +84,7 @@ module Bouncy
         return Status.new(nil, knowledge: :unconfigured)
       end
 
-      Status.new(Suppression.find_by(scope: scope, email: Identity.normalize(email)))
+      Status.new(current_state(Suppression).find_by(scope: scope, email: Identity.normalize(email)))
     rescue ActiveRecord::ActiveRecordError => e
       raise unless database_unavailable?(e)
 
@@ -106,7 +106,7 @@ module Bouncy
         return StatusSet.new(keys.index_with { Status.new(nil, knowledge: :unconfigured) }, knowledge: :unconfigured)
       end
 
-      rows = Suppression.where(scope: scope, email: keys).index_by(&:email)
+      rows = current_state(Suppression).where(scope: scope, email: keys).index_by(&:email)
       StatusSet.new(keys.to_h { |key| [key, Status.new(rows[key])] })
     rescue ActiveRecord::ActiveRecordError => e
       raise unless database_unavailable?(e)
@@ -143,7 +143,9 @@ module Bouncy
 
     # Holds the address while the block runs, so no new block for it can commit between the
     # app's own check and its send. Inside a transaction the hold lasts until the transaction
-    # ends. Returns the block's value. Unconfigured, it only runs the block.
+    # ends. Returns the block's value. Unconfigured, it only runs the block. The check needs the
+    # latest committed state: see current_state, and take the hold before a REPEATABLE READ or
+    # SQLite transaction reads anything.
     #
     #   Bouncy.hold(order.email) do
     #     ReceiptMailer.with(order:).receipt.deliver_now unless Bouncy.blocked?(order.email)
@@ -157,6 +159,15 @@ module Bouncy
       end
 
       AddressLock.hold(email, &)
+    end
+
+    # Inside Bouncy.hold, MySQL reads restrictions with a locking read, which sees the latest
+    # committed state: a REPEATABLE READ snapshot from before the hold cannot hide a newer block
+    # or release. PostgreSQL at READ COMMITTED reads the latest state with every statement.
+    def current_state(relation)
+      return relation unless AddressLock.holding? && Record.connection_pool.with_connection(&:adapter_name).match?(/Mysql|Trilogy/i)
+
+      relation.lock("LOCK IN SHARE MODE")
     end
 
     def unblocked
