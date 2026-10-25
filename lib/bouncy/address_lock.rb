@@ -24,8 +24,13 @@ module Bouncy
   # comes after the releases, and the hooks of a write inside a hold wait until the hold ends.
   module AddressLock
     FileHold = Struct.new(:guard, :file, :mode, :holders)
+    # Per connection, like the locks themselves: threads that share one connection, as Rails
+    # system tests do, share its holds and the hooks that wait for them.
+    Holds = Struct.new(:depth, :hooks)
     FILE_LOCKS = ObjectSpace::WeakKeyMap.new
     DEFERRED = ObjectSpace::WeakKeyMap.new
+    HOLDS = ObjectSpace::WeakKeyMap.new
+    FIXTURES = ObjectSpace::WeakKeyMap.new
     GUARD = Mutex.new
 
     module_function
@@ -36,16 +41,18 @@ module Bouncy
         settle(connection)
         require_read_committed(connection)
         release = take(connection, key, exclusive: false)
-        depth = ActiveSupport::IsolatedExecutionState[:bouncy_holds].to_i
-        ActiveSupport::IsolatedExecutionState[:bouncy_holds] = depth + 1
+        holds = GUARD.synchronize { (HOLDS[connection] ||= Holds.new(0, [])).tap { |state| state.depth += 1 } }
         begin
           yield
         ensure
-          ActiveSupport::IsolatedExecutionState[:bouncy_holds] = depth
+          hooks = GUARD.synchronize do
+            holds.depth -= 1
+            holds.depth.zero? ? holds.hooks.slice!(0..) : []
+          end
           begin
             until_transaction_end(connection, release)
           ensure
-            run_pending_hooks if depth.zero?
+            hooks.each(&:call)
           end
         end
       end
@@ -60,7 +67,9 @@ module Bouncy
       end
     end
 
-    def holding? = ActiveSupport::IsolatedExecutionState[:bouncy_holds].to_i.positive?
+    def holding?(connection = Record.connection_pool.active_connection)
+      connection && GUARD.synchronize { HOLDS[connection]&.depth.to_i.positive? }
+    end
 
     # Runs a hook once its connection holds no Bouncy lock. A record's commit callbacks can run
     # while an outer transaction is still open, under transaction(joinable: false); the hook then
@@ -68,31 +77,54 @@ module Bouncy
     # it rolls back. Inside a hold it waits for the hold.
     #
     # Rails transactional tests keep 0.1's timing: the hook runs at the commit inside the
-    # fixture transaction, which only ever rolls back. With no transaction left open, releases
+    # fixture transaction, which only ever rolls back. FixtureTransactions marks that transaction. With no transaction left open, releases
     # that Rails did not report are settled first, because Rails runs record commit callbacks,
     # such as the event's, before the transaction callbacks that would release them.
     def after_locks(&hook)
       connection = Record.connection_pool.active_connection
-      deferred = connection&.transaction_open? && !only_fixture_transaction?(connection)
+      return hook.call unless connection
+
+      deferred = connection.transaction_open? && !only_fixture_transaction?(connection)
       return connection.current_transaction.after_commit { after_locks(&hook) } if deferred
 
-      settle(connection) if connection
-      return hook.call unless holding?
-
-      (ActiveSupport::IsolatedExecutionState[:bouncy_pending_hooks] ||= []) << hook
+      settle(connection)
+      queued = GUARD.synchronize do
+        holds = HOLDS[connection]
+        holds.hooks << hook if holds&.depth.to_i.positive?
+      end
+      hook.call unless queued
     end
 
-    # ActiveRecord::TestFixtures opens its transaction through ConnectionPool#pin_connection!,
-    # which marks the connection pinned and then begins a transaction(joinable: false). Rails 7.2,
-    # 8.0 and 8.1 pin a connection for tests only.
+    # True while the connection's only open transaction is the one Rails transactional fixtures
+    # began on it. FixtureTransactions records that transaction from the fixture lifecycle.
     def only_fixture_transaction?(connection)
-      connection.respond_to?(:pinned) && connection.pinned && connection.open_transactions == 1
+      fixture = GUARD.synchronize { FIXTURES[connection] }
+      !fixture.nil? && connection.open_transactions == 1 && connection.current_transaction.equal?(fixture)
     end
 
-    def run_pending_hooks
-      hooks = ActiveSupport::IsolatedExecutionState[:bouncy_pending_hooks]
-      ActiveSupport::IsolatedExecutionState[:bouncy_pending_hooks] = nil
-      hooks&.each(&:call)
+    # Prepended into every class that includes ActiveRecord::TestFixtures. Rails 7.2, 8.0 and 8.1
+    # begin the fixture transactions in setup_transactional_fixtures and roll them back in
+    # teardown_transactional_fixtures; between the two, each writing connection's open
+    # transaction is the fixtures' own.
+    module FixtureTransactions
+      private
+
+      def setup_transactional_fixtures
+        super
+        @bouncy_fixture_connections = ActiveRecord::Base.connection_handler.connection_pool_list(:writing).filter_map do |pool|
+          connection = pool.active_connection
+          next unless connection&.transaction_open?
+
+          GUARD.synchronize { FIXTURES[connection] = connection.current_transaction }
+          connection
+        end
+      end
+
+      def teardown_transactional_fixtures
+        Array(@bouncy_fixture_connections).each { |connection| GUARD.synchronize { FIXTURES.delete(connection) } }
+        @bouncy_fixture_connections = nil
+        super
+      end
     end
 
     # Releases what an ended transaction left behind, in case Rails never reported its end.
@@ -250,6 +282,8 @@ module Bouncy
   # Subscribed when the gem loads: Rails gives each transaction the subscribers that exist when
   # the transaction starts, so a later subscription misses it, and the second path covers that.
   ActiveSupport::Notifications.subscribe("transaction.active_record") { |*, payload| AddressLock.transaction_ended(payload) }
+
+  ActiveSupport.on_load(:active_record_fixtures) { prepend AddressLock::FixtureTransactions }
 
   # The third path: a connection goes back to the pool with nothing of Bouncy's still locked.
   ActiveRecord::ConnectionAdapters::AbstractAdapter.set_callback(:checkin, :after) { AddressLock.release_deferred(self) }

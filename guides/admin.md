@@ -68,4 +68,4 @@ end
 
 Implement that job in the host. Load the event, resolve the responsible seller/operator through authorized host records, and use an idempotency key based on the event ID. Pick an in-app/admin notification or another suitable channel. Do not send an alert to the same blocked recipient, include another tenant's history, or create an alert-mail bounce loop. Handle a pruned/missing event gracefully.
 
-Hooks run after commit but are best effort. For guaranteed notifications, reconcile pending work in a host outbox; an enqueue exception cannot roll back an acknowledged bounce. Test the job and authorization policy with the app's actual customer/seller models before enabling it.
+Hooks run after the outermost commit but are best effort. For guaranteed notifications, reconcile pending work in a host outbox; an enqueue exception cannot roll back an acknowledged bounce. Test the job and authorization policy with the app's actual customer/seller models before enabling it.

@@ -23,8 +23,8 @@ class TransactionalFixturesTest < ActiveSupport::TestCase
 
   test "hooks fire inside transactional fixtures, at the commit of the app's own transaction" do
     connection = ActiveRecord::Base.connection
-    assert connection.pinned, "Rails pinned the connection for the fixture transaction"
     assert_equal 1, connection.open_transactions
+    assert_same connection.current_transaction, Bouncy::AddressLock::FIXTURES[connection], "the fixture lifecycle marked its transaction"
 
     blocked = []
     events = []
@@ -41,6 +41,17 @@ class TransactionalFixturesTest < ActiveSupport::TestCase
     assert_equal %w[manual_block manual_block], events
     Bouncy.hold("cleo@example.com") { Bouncy.block!("cleo@example.com", note: "Hold") }
     assert_equal "cleo@example.com", blocked.last
+  end
+
+  test "a hook of another thread on the shared fixture connection waits for this thread's hold" do
+    blocked = []
+    Bouncy.configuration.after_block = ->(event) { blocked << event.email }
+    Bouncy.hold("ana@example.com") do
+      Thread.new { Bouncy.block!("bea@example.com", note: "Hold") }.join(5)
+      assert Bouncy.blocked?("bea@example.com"), "the other thread used the same connection"
+      assert_empty blocked, "the hold on the shared connection is still open"
+    end
+    assert_equal ["bea@example.com"], blocked
   end
 
   test "a non-joinable transaction of the app inside the fixtures still defers its hooks" do

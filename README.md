@@ -215,7 +215,7 @@ Bouncy.configure do |config|
 end
 ```
 
-Your app defines the notification job. Hooks run after commit and are best effort. Events default to 90-day retention; no raw message bodies or payloads are stored. See [hooks and monitoring](guides/operations.md#hooks-and-instrumentation) and [privacy](guides/privacy.md).
+Your app defines the notification job. Hooks are best effort and run after the commit of the outermost transaction, once the connection holds no Bouncy lock: a rollback drops them, and inside `Bouncy.hold` they wait until the hold ends. One exception: in Rails transactional tests, whose fixture transaction only rolls back, hooks run when your app's own transaction commits, as in 0.1. Events default to 90-day retention; no raw message bodies or payloads are stored. See [hooks and monitoring](guides/operations.md#hooks-and-instrumentation) and [privacy](guides/privacy.md).
 
 To follow your own mail (sent, delivered, bounced), take every SES notification synchronously:
 

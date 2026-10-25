@@ -91,6 +91,22 @@ class HoldTest < BouncyTest
     assert Bouncy.blocked?("ada@example.com")
   end
 
+  test "a connection pinned outside the fixture lifecycle keeps the outer-commit deferral" do
+    blocked = []
+    Bouncy.configuration.after_block = ->(event) { blocked << event.email }
+    pool = ActiveRecord::Base.connection_pool
+    pool.pin_connection!(false)
+    begin
+      assert_equal 1, pool.lease_connection.open_transactions
+      Bouncy.block!("ada@example.com", note: "Hold")
+      assert_empty blocked, "the pinned connection's transaction is still open"
+    ensure
+      pool.unpin_connection!
+    end
+    assert_empty blocked, "unpinning rolled the block back, and its hook with it"
+    refute Bouncy.blocked?("ada@example.com")
+  end
+
   test "PostgreSQL keys have 64 bits: two addresses that shared the old 28-bit key no longer do" do
     first = "user22188@example.com"
     second = "user30287@example.com"
