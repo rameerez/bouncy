@@ -194,7 +194,7 @@ class SqliteHoldTest < BouncyTest
   test "without the event subscription, the transaction's own callbacks release at commit and rollback" do
     with_file_database do |path|
       Bouncy::AddressLock.stub(:transaction_ended, ->(*) {}) do
-        Bouncy::Suppression.transaction { Bouncy.block!("ada@example.com", note: "Hold") }
+        Bouncy::Suppression.transaction { Bouncy::Store.change("ada@example.com") { |row| row } }
         assert lockable?(path, File::LOCK_EX), "released at the commit"
         Bouncy::Suppression.transaction do
           Bouncy.hold("ben@example.com") { :sent }
@@ -203,13 +203,37 @@ class SqliteHoldTest < BouncyTest
         assert lockable?(path, File::LOCK_EX), "released at the rollback"
         Bouncy::Suppression.transaction do
           Bouncy::Suppression.transaction(requires_new: true) do
-            Bouncy.block!("cleo@example.com", note: "Hold")
+            Bouncy::Store.change("cleo@example.com") { |row| row }
             raise ActiveRecord::Rollback
           end
           refute lockable?(path, File::LOCK_SH), "a savepoint's rollback keeps the lock for the outer transaction"
         end
         assert lockable?(path, File::LOCK_EX), "released when the outer transaction ends"
       end
+    end
+  end
+
+  test "without the event subscription, a non-joinable parent still releases at its commit" do
+    with_file_database do |path|
+      Bouncy::AddressLock.stub(:transaction_ended, ->(*) {}) do
+        Bouncy::Suppression.transaction(joinable: false) do
+          Bouncy::Store.change("ada@example.com") { |row| row }
+          refute lockable?(path, File::LOCK_SH), "the savepoint committed, the parent holds the lock"
+        end
+        assert lockable?(path, File::LOCK_EX), "released at the parent's commit, with no check-in"
+      end
+    end
+  end
+
+  test "without the event subscription, hooks run after the releases Rails did not report" do
+    with_file_database do |path|
+      seen = []
+      Bouncy.configuration.after_block = ->(_event) { seen << lockable?(path, File::LOCK_EX) }
+      Bouncy::AddressLock.stub(:transaction_ended, ->(*) {}) do
+        Bouncy.block!("ada@example.com", note: "Hold")
+        Bouncy::Suppression.transaction(joinable: false) { Bouncy.block!("ben@example.com", note: "Hold") }
+      end
+      assert_equal [true, true], seen
     end
   end
 
@@ -477,22 +501,49 @@ if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
       go << true
     end
 
-    test "without the event subscription, the transaction's callbacks and the pool's check-in release" do
+    # Runs the block on a worker connection, then keeps that connection checked out until the
+    # caller lets it go, so the pool's check-in cannot be what released a lock.
+    def on_checked_out_connection(&)
+      done = Queue.new
+      finish = Queue.new
+      worker = in_thread do |connection|
+        yield connection
+        done << true
+        finish.pop
+      end
+      done.pop
+      [worker, finish]
+    end
+
+    test "without the event subscription, the transaction's own callbacks release while the connection stays checked out" do
       Bouncy::AddressLock.stub(:transaction_ended, ->(*) {}) do
-        in_thread { Bouncy::Suppression.transaction { Bouncy.block!("ana@example.com", note: "Hold") } }.join(5)
+        worker, finish = on_checked_out_connection do
+          Bouncy::Suppression.transaction { Bouncy::Store.change("ana@example.com") { |row| row } }
+        end
         assert free?("ana@example.com"), "released at the commit"
-        in_thread do
+        finish << true
+        worker.join(5)
+
+        worker, finish = on_checked_out_connection do
           Bouncy::Suppression.transaction do
             Bouncy.hold("bea@example.com") { :sent }
             raise ActiveRecord::Rollback
           end
-        end.join(5)
+        end
         assert free?("bea@example.com"), "released at the rollback"
+        finish << true
+        worker.join(5)
       end
-      in_thread do |connection|
-        Bouncy::AddressLock::DEFERRED[connection] = [Bouncy::AddressLock.take(connection, "cleo@example.com", exclusive: true)].compact
-      end.join(5)
-      assert free?("cleo@example.com"), "released when the connection went back to the pool"
+    end
+
+    test "a connection going back to the pool releases what both other paths missed" do
+      worker, finish = on_checked_out_connection do |connection|
+        Bouncy::AddressLock::DEFERRED[connection] = [Bouncy::AddressLock.take(connection, "cleo@example.com", exclusive: true)]
+      end
+      refute free?("cleo@example.com"), "still held while the connection is checked out"
+      finish << true
+      worker.join(5)
+      assert free?("cleo@example.com"), "released at the check-in"
     end
 
     test "under a non-joinable transaction, hooks run after its commit, when the address is free" do

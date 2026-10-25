@@ -20,7 +20,7 @@ Eight features that apps need to replace a hand-rolled SES integration with Boun
 
 - The recipient check moved to the delivery method that Mail calls after every interceptor and mailer callback, so a message that `:drop` left with no recipient reaches no transport, `deliver_now!` and `deliver_later!` included, and a recipient that a later callback or interceptor adds is checked too.
 - The interceptor keeps each remaining To, Cc, Bcc and SMTP envelope entry as written, display name included, because it looks up only the entry's bare address.
-- The `after_*` hooks run after the commit of the outermost transaction and after the enclosing `Bouncy.hold`, so a hook never runs while Bouncy holds an address; a rollback drops them, and under transactional tests, whose outer transaction rolls back, they do not run.
+- The `after_*` hooks run after the commit of the outermost transaction and after the enclosing `Bouncy.hold`, so a hook never runs while Bouncy holds an address; a rollback drops them, and Rails transactional tests keep 0.1's timing.
 - The sync's scope lock reads its answer without the query cache, so a second sync in one cached request cannot take the lock without locking.
 
 ## [0.1.0] - 2026-09-09

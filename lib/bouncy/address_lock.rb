@@ -63,15 +63,30 @@ module Bouncy
     def holding? = ActiveSupport::IsolatedExecutionState[:bouncy_holds].to_i.positive?
 
     # Runs a hook once its connection holds no Bouncy lock. A record's commit callbacks can run
-    # while an outer transaction is still open, under transaction(joinable: false) and in
-    # transactional tests; the hook then moves to that transaction, and so runs after the
-    # commit of the outermost one, or never if it rolls back. Inside a hold it waits for the hold.
+    # while an outer transaction is still open, under transaction(joinable: false); the hook then
+    # moves to that transaction, and so runs after the commit of the outermost one, or never if
+    # it rolls back. Inside a hold it waits for the hold.
+    #
+    # Rails transactional tests keep 0.1's timing: the hook runs at the commit inside the
+    # fixture transaction, which only ever rolls back. With no transaction left open, releases
+    # that Rails did not report are settled first, because Rails runs record commit callbacks,
+    # such as the event's, before the transaction callbacks that would release them.
     def after_locks(&hook)
       connection = Record.connection_pool.active_connection
-      return connection.current_transaction.after_commit { after_locks(&hook) } if connection&.transaction_open?
+      deferred = connection&.transaction_open? && !only_fixture_transaction?(connection)
+      return connection.current_transaction.after_commit { after_locks(&hook) } if deferred
+
+      settle(connection) if connection
       return hook.call unless holding?
 
       (ActiveSupport::IsolatedExecutionState[:bouncy_pending_hooks] ||= []) << hook
+    end
+
+    # ActiveRecord::TestFixtures opens its transaction through ConnectionPool#pin_connection!,
+    # which marks the connection pinned and then begins a transaction(joinable: false). Rails 7.2,
+    # 8.0 and 8.1 pin a connection for tests only.
+    def only_fixture_transaction?(connection)
+      connection.respond_to?(:pinned) && connection.pinned && connection.open_transactions == 1
     end
 
     def run_pending_hooks
@@ -197,14 +212,16 @@ module Bouncy
       watch(connection)
     end
 
-    # The second path. A savepoint that commits hands both callbacks to its parent; one that
-    # rolls back runs after_rollback while its parent continues, so the watch moves up a level.
-    # It uses the connection's transaction object: the public Record.current_transaction is a
-    # null transaction under transaction(joinable: false), and would run the block at once.
+    # The second path. A savepoint under a joinable parent hands both callbacks to the parent
+    # when it commits. One that rolls back, or commits under a transaction(joinable: false)
+    # parent, runs its callback while the parent continues, so the watch moves up a level. It
+    # uses the connection's transaction object: the public Record.current_transaction is a null
+    # transaction under transaction(joinable: false), and would run the block at once.
     def watch(connection)
       transaction = connection.current_transaction
-      transaction.after_commit { settle(connection) }
-      transaction.after_rollback { connection.transaction_open? ? watch(connection) : settle(connection) }
+      ended = -> { connection.transaction_open? ? watch(connection) : settle(connection) }
+      transaction.after_commit(&ended)
+      transaction.after_rollback(&ended)
     end
 
     # Rails pops a committed transaction before it reports the commit, and reports a rollback
