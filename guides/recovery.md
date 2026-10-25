@@ -10,7 +10,7 @@ Bouncy obtains a complete supported-scope snapshot, finds the exact provider var
 
 A partial provider operation raises `Bouncy::ReleaseFailed`. Inspect `error.outcomes` or the `release_failed` event: some variants may have been removed while another failed. Local provider evidence remains blocked until a successful recovery/reconciliation. Remote calls cannot be rolled back with your database transaction.
 
-Inactive rows retain a release-time fence. Older feedback and stale snapshots cannot simply reapply the released evidence. A genuinely newer failure can block the address again. Provider changes after a completed observation remain possible; this is not a permanent deliverability guarantee.
+Inactive rows retain a release-time fence. Older feedback, stale snapshots and imports dated before the release cannot simply reapply the released evidence. A genuinely newer failure can block the address again. Provider changes after a completed observation remain possible; this is not a permanent deliverability guarantee.
 
 ## Local holds
 

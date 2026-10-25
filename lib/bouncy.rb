@@ -48,7 +48,7 @@ module Bouncy
     # True when config.scope is set. An unconfigured Bouncy is inactive: it intercepts nothing,
     # reports no restrictions and returns empty relations, so a host can install the gem before
     # its environment variables exist without breaking mail delivery. Explicit operations
-    # (sync!, block!, release!, forget!) still raise ConfigurationError.
+    # (sync!, block!, import!, release!, forget!) still raise ConfigurationError.
     def configured? = configuration.configured?
 
     def unconfigured!(operation)
@@ -132,6 +132,14 @@ module Bouncy
       end
     end
 
+    # Records a block that another system recorded at the time at, for an app that moves its own
+    # suppression table to Bouncy. reason is :hard_bounce, :complaint or :manual. A bounce or a
+    # complaint is the same evidence as a webhook block; a manual block is a manual hold. The
+    # time can be of any age. The import calls no hook, writes nothing when it repeats, never
+    # weakens a block in force, and changes nothing when a release came at or after its time.
+    # Returns the suppression row. Does not call the provider.
+    def import!(email, reason:, at:, note: nil, actor: nil) = Importer.new.call(email, reason: reason, at: at, note: note, actor: actor)
+
     def forget!(email)
       current_scope = scope
       key = Identity.normalize(email)
@@ -205,6 +213,7 @@ require_relative "bouncy/providers/ses"
 require_relative "bouncy/providers/ses_parser"
 require_relative "bouncy/notification"
 require_relative "bouncy/ingestor"
+require_relative "bouncy/importer"
 require_relative "bouncy/recovery"
 require_relative "bouncy/scope_lock"
 require_relative "bouncy/reconciler"

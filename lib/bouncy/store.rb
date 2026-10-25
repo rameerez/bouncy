@@ -17,7 +17,11 @@ module Bouncy
           row = Suppression.find_or_create_by!(scope: Bouncy.scope, email: key) do |record|
             record.provider = Bouncy.configuration.provider.to_s
           end
-          row.with_lock { yield row }
+          row.with_lock do
+            # A soft hold that ran out leaves its start in blocked_at. The next block starts anew.
+            row.blocked_at = nil unless row.blocked?
+            yield row
+          end
         end
       rescue ActiveRecord::RecordNotUnique, ActiveRecord::StaleObjectError, ActiveRecord::Deadlocked
         attempts += 1

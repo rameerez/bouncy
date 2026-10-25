@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-25
+
+Three gaps that the first app to move its own suppression table to Bouncy found. There is no new migration.
+
+### Added
+
+- `Bouncy.import!(email, reason:, at:, note: nil, actor: nil)` records a block that another system recorded, with its reason (`:hard_bounce`, `:complaint` or `:manual`) and its time, as one `imported` event; it calls no hook, writes nothing when it repeats, never weakens a block in force and changes nothing after a later release, because an app that carried its old suppressions had to call the internal `Bouncy::Ingestor`, which treats each call as new webhook feedback. `Bouncy::Ingestor` keeps its 0.2.0 call shape and is now marked internal.
+- `Status#blocked_at` is the time the block in force began (for an import, its `at:` time) and `nil` when the address is not blocked, because an app that shows "not deliverable since" had to read the suppression row itself; a block that follows an expired soft hold now starts at its own time, not at the soft hold's.
+
+### Changed
+
+- The 90-day freshness rule (`config.maximum_event_age`) applies to webhook feedback only, not to imports or manual holds, because it exists to stop a late notification from blocking, while a block that another system kept for a year is still a block: an import dated a year ago drops mail, and a webhook bounce dated a year ago still does not.
+
 ## [0.2.0] - 2026-10-25
 
 Eight features that apps need to replace a hand-rolled SES integration with Bouncy. There is no new migration: the address lock uses database locks, not a column.

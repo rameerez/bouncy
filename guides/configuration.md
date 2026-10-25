@@ -28,7 +28,7 @@ Replace the examples with your actual deployment. Set `all_sending_paths_listed`
 | `webhook_blocking` | `:cautious` with `require_fresh_sync`, `:strict` without | Which notifications block. `:cautious` blocks General/NoEmail bounces and complaints naming one recipient; the sync covers the rest. `:strict` blocks every Permanent bounce and every recipient a complaint names. See [bounce handling](bounce-handling.md#ses-event-classification). |
 | `record_deliveries` | `false` | Record normalized per-recipient SES Delivery events when enabled and routed to the topic. Server acceptance is not inbox placement. |
 | `retention` | `90.days` | Delete events older than this by local creation time when the prune job runs. Does not delete state rows. |
-| `maximum_event_age` | `90.days` | Feedback older than this cannot apply a new restriction. Retention must be at least this long; both must be positive. |
+| `maximum_event_age` | `90.days` | Webhook feedback older than this cannot apply a new restriction. `Bouncy.import!` and `Bouncy.block!` do not use it. Retention must be at least this long; both must be positive. |
 | `soft_bounce_threshold` | `nil` | Record-only by default. An integer from 1 to 50 enables escalation for repeated `MailboxFull` bounces. |
 | `soft_bounce_window` | `30.days` | Positive rolling window of eligible occurrence times. |
 | `soft_bounce_block_for` | `30.days` | Positive duration of the temporary local hold triggered by escalation. |
