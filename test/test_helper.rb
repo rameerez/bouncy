@@ -93,6 +93,7 @@ class BouncyTest < ActiveSupport::TestCase
     Bouncy::Suppression.delete_all
     ActiveRecord::Base.connection.execute("DELETE FROM contacts")
     Bouncy.reset_configuration!
+    Bouncy::Providers::SnsVerifier::CERTIFICATES.clear if defined?(Bouncy::Providers::SnsVerifier)
     Bouncy.configuration.scope = "ses:123456789012:us-east-1:account"
     @provider = FakeProvider.new
     Bouncy.configuration.adapter = @provider
@@ -100,6 +101,23 @@ class BouncyTest < ActiveSupport::TestCase
 
   def entry(email = "Ada@Example.com", reason: :hard_bounce, time: 1.day.ago)
     Bouncy::Providers::Entry.new(email: email, reason: reason, updated_at: time)
+  end
+
+  # Delivers a plain Mail message the way Mail does, through every interceptor and the gate.
+  def deliver(message)
+    message.delivery_method(:test)
+    message.deliver
+  end
+
+  # The lines a block writes to Rails.logger.
+  def logged
+    output = StringIO.new
+    previous = Rails.logger
+    Rails.logger = Logger.new(output)
+    yield
+    output.string
+  ensure
+    Rails.logger = previous
   end
 
   def observe(email = "ada@example.com", kind: "hard_bounce", id: SecureRandom.uuid, time: Time.current, details: {})

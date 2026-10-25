@@ -44,9 +44,11 @@ module Bouncy
       details = attributes.fetch(:details).merge("ignored_for_policy" => [too_old, fenced, out_of_order].any?)
       if row && !details["ignored_for_policy"]
         was_blocked = row.blocked?
-        # A complaint blocks locally only when the provider named exactly one recipient (SesParser
-        # marks it "confirmed"); candidates wait for the provider's own list at the next sync.
-        if attributes[:kind] == "hard_bounce" || (attributes[:kind] == "complaint" && details["certainty"] == "confirmed")
+        # Under :cautious a complaint blocks locally only when the provider named exactly one
+        # recipient (SesParser marks it "confirmed"); candidates wait for the provider's own list
+        # at the next sync. Under :strict every named recipient blocks.
+        complaint = attributes[:kind] == "complaint" && (details["certainty"] == "confirmed" || Bouncy.configuration.webhook_blocking == :strict)
+        if attributes[:kind] == "hard_bounce" || complaint
           row.event_blocked_at = time
           row.event_reason = attributes[:kind]
           row.last_event_at = [row.last_event_at, time].compact.max

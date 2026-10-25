@@ -19,5 +19,19 @@ Bouncy.configure do |config|
   # config.soft_bounce_window = 30.days
   # config.soft_bounce_block_for = 30.days
 
+  # Stamp one SES configuration set on every message, so SES publishes its events to the topic.
+  # config.ses.configuration_set = "transactional"
+
+  # Confirm the SNS subscription by visiting its signed SubscribeURL instead of calling
+  # sns:ConfirmSubscription.
+  # config.ses.subscription_confirmation = :subscribe_url
+
+  # An app that runs no sync job enforces its webhook blocks alone. webhook_blocking then
+  # defaults to :strict: every Permanent bounce and every complained recipient blocks.
+  # config.require_fresh_sync = false
+
+  # Every SES notification, after Bouncy recorded it. A raise makes SNS deliver it again.
+  # config.on_notification = ->(notification) { }
+
   config.interception = :log # Review a complete sync before enabling :drop.
 end

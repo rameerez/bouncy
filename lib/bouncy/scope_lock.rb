@@ -13,7 +13,8 @@ module Bouncy
         key = Digest::SHA256.hexdigest(Bouncy.scope)[0, 15].to_i(16)
         case connection.adapter_name
         when "PostgreSQL"
-          acquired = connection.select_value("SELECT pg_try_advisory_lock(#{key})")
+          # Uncached: a cached answer would report the lock without taking it.
+          acquired = connection.uncached { connection.select_value("SELECT pg_try_advisory_lock(#{key})") }
           raise ProviderError, "Another sync holds this scope lock" unless [true, "t"].include?(acquired)
 
           begin
@@ -23,7 +24,7 @@ module Bouncy
           end
         when /Mysql|Trilogy/i
           name = Digest::SHA256.hexdigest("bouncy:#{connection.pool.db_config.database}:#{Bouncy.scope}")
-          acquired = connection.select_value("SELECT GET_LOCK('#{name}', 0)")
+          acquired = connection.uncached { connection.select_value("SELECT GET_LOCK('#{name}', 0)") }
           raise ProviderError, "Another sync holds this scope lock" unless acquired == 1
 
           begin

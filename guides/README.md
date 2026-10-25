@@ -1,6 +1,6 @@
 # Bouncy guides
 
-These guides describe the published **v0.1.0** API. Start with the [README installation steps](../README.md#installation), then connect SES and schedule the jobs.
+These guides describe the **v0.2.0** API. Start with the [README installation steps](../README.md#installation), then connect SES and schedule the jobs.
 
 | Guide | What it covers |
 |---|---|
@@ -9,7 +9,7 @@ These guides describe the published **v0.1.0** API. Start with the [README insta
 | [API reference](api.md) | Individual/batch status, model integration, queries, operations and errors |
 | [Operations](operations.md) | Jobs, scheduling, tasks, freshness, hooks and monitoring |
 | [Bounce handling](bounce-handling.md) | Hard/soft bounces, complaints and opt-in mailbox-full escalation |
-| [Action Mailer delivery](delivery.md) | Modes, SMTP envelopes, bypasses and unsupported send paths |
+| [Action Mailer delivery](delivery.md) | Modes, SMTP envelopes, bang delivery, `Bouncy.hold`, the configuration set and unsupported send paths |
 | [Admin integration](admin.md) | Host-owned badges, recovery actions, Madmin and tenant authorization |
 | [Recovery](recovery.md) | SES suppression removal, local holds and partial failures |
 | [Troubleshooting](troubleshooting.md) | “The mailer says sent, but the email never arrived” and sync failures |

@@ -118,6 +118,19 @@ class SesTest < BouncyTest
     assert_match(/covers \[\]/, snapshot.policy_reason)
   end
 
+  test "the stamped configuration set joins the sending policy check" do
+    Bouncy.configuration.ses.configuration_set = "transactional"
+    @ses.stub_responses(:get_configuration_set, suppression_options: { suppressed_reasons: ["BOUNCE"] })
+    snapshot = @adapter.snapshot
+    refute snapshot.policy_verified
+    assert_match(/configuration set transactional overrides/, snapshot.policy_reason)
+    @ses.stub_responses(:get_configuration_set, suppression_options: { suppressed_reasons: %w[BOUNCE COMPLAINT] })
+    assert @adapter.snapshot.policy_verified
+    requests = @ses.api_requests.select { |request| request[:operation_name] == :get_configuration_set }
+    names = requests.map { |request| request[:params][:configuration_set_name] }
+    assert_equal %w[transactional transactional], names
+  end
+
   test "control confirmation uses signed token and topic rather than SubscribeURL" do
     assert @adapter.control("Type" => "SubscriptionConfirmation", "TopicArn" => "arn:aws:sns:us-east-1:123456789012:feedback",
                             "Token" => "signed-token", "SubscribeURL" => "https://attacker.invalid/")

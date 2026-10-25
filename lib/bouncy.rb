@@ -84,7 +84,7 @@ module Bouncy
         return Status.new(nil, knowledge: :unconfigured)
       end
 
-      Status.new(Suppression.find_by(scope: scope, email: Identity.normalize(email)))
+      Status.new(current_state(Suppression).find_by(scope: scope, email: Identity.normalize(email)))
     rescue ActiveRecord::ActiveRecordError => e
       raise unless database_unavailable?(e)
 
@@ -106,7 +106,7 @@ module Bouncy
         return StatusSet.new(keys.index_with { Status.new(nil, knowledge: :unconfigured) }, knowledge: :unconfigured)
       end
 
-      rows = Suppression.where(scope: scope, email: keys).index_by(&:email)
+      rows = current_state(Suppression).where(scope: scope, email: keys).index_by(&:email)
       StatusSet.new(keys.to_h { |key| [key, Status.new(rows[key])] })
     rescue ActiveRecord::ActiveRecordError => e
       raise unless database_unavailable?(e)
@@ -141,6 +141,35 @@ module Bouncy
       end
     end
 
+    # Holds the address while the block runs, so no new block for it can commit between the
+    # app's own check and its send. Inside a transaction the hold lasts until the transaction
+    # ends. Returns the block's value. Unconfigured, it only runs the block. The check needs the
+    # latest committed state: see current_state. Inside a PostgreSQL REPEATABLE READ or
+    # SERIALIZABLE transaction it raises; hold around such a transaction, and around SQLite ones.
+    #
+    #   Bouncy.hold(order.email) do
+    #     ReceiptMailer.with(order:).receipt.deliver_now unless Bouncy.blocked?(order.email)
+    #   end
+    def hold(email, &)
+      raise ArgumentError, "Bouncy.hold needs a block" unless block_given?
+
+      unless configured?
+        unconfigured!("hold")
+        return yield
+      end
+
+      AddressLock.hold(email, &)
+    end
+
+    # Inside Bouncy.hold, MySQL reads restrictions with a locking read, which sees the latest
+    # committed state: a REPEATABLE READ snapshot from before the hold cannot hide a newer block
+    # or release. PostgreSQL at READ COMMITTED reads the latest state with every statement.
+    def current_state(relation)
+      return relation unless AddressLock.holding? && Record.connection_pool.with_connection(&:adapter_name).match?(/Mysql|Trilogy/i)
+
+      relation.lock("LOCK IN SHARE MODE")
+    end
+
     def unblocked
       previous = ActiveSupport::IsolatedExecutionState[:bouncy_unblocked]
       ActiveSupport::IsolatedExecutionState[:bouncy_unblocked] = true
@@ -169,10 +198,12 @@ require_relative "bouncy/suppression"
 require_relative "bouncy/event"
 require_relative "bouncy/status"
 require_relative "bouncy/status_set"
+require_relative "bouncy/address_lock"
 require_relative "bouncy/store"
 require_relative "bouncy/providers/base"
 require_relative "bouncy/providers/ses"
 require_relative "bouncy/providers/ses_parser"
+require_relative "bouncy/notification"
 require_relative "bouncy/ingestor"
 require_relative "bouncy/recovery"
 require_relative "bouncy/scope_lock"
@@ -180,6 +211,7 @@ require_relative "bouncy/reconciler"
 require_relative "bouncy/model"
 require_relative "bouncy/interceptor"
 require_relative "bouncy/webhook"
+require_relative "bouncy/body_limit"
 require_relative "bouncy/sync_job"
 require_relative "bouncy/prune_job"
 require_relative "bouncy/engine"

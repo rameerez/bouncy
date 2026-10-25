@@ -52,11 +52,12 @@ class InterceptorTest < BouncyTest
     assert_equal ["ben@example.com"], ActionMailer::Base.deliveries.sole.smtp_envelope_to
   end
 
-  test "bang delivery is an explicitly unsupported bypass of perform deliveries" do
+  test "bang delivery stops too although Mail's deliver! ignores perform deliveries" do
     Bouncy.configuration.interception = :drop
-    error = assert_raises(ArgumentError) { ExampleMailer.notice(to: "ada@example.com").deliver_now! }
-    assert_match(/SMTP To address may not be blank/, error.message)
-    assert_empty ActionMailer::Base.deliveries
+    message = ExampleMailer.notice(to: "ada@example.com").deliver_now!
+    assert_empty ActionMailer::Base.deliveries, "the transport is not called"
+    assert_empty message.smtp_envelope_to
+    assert_equal 1, Bouncy.events.where(kind: "skipped").count
   end
 
   test "off and execution local bypass leave the message intact" do
@@ -87,9 +88,24 @@ class InterceptorTest < BouncyTest
     Bouncy.configuration.interception = :drop
     assert_equal ["ada@example.com"], ExampleMailer.notice(to: "ada@example.com").deliver_now.to
     Bouncy.sync!
-    assert_nil ExampleMailer.notice(to: "ada@example.com").deliver_now.to
+    assert_empty ExampleMailer.notice(to: "ada@example.com").deliver_now.smtp_envelope_to
     travel 3.hours
     assert_equal ["ada@example.com"], ExampleMailer.notice(to: "ada@example.com").deliver_now.to
+    assert_equal 2, ActionMailer::Base.deliveries.size
+  end
+
+  test "without require_fresh_sync a webhook block drops mail with no sync at all" do
+    Bouncy.release!("ada@example.com", at: :local)
+    observe
+    Bouncy.configuration.require_fresh_sync = false
+    assert_nil Bouncy.last_sync
+    ExampleMailer.notice(to: "ada@example.com").deliver_now
+    assert Bouncy.events.where(kind: "skipped").sole.details["would_drop"], "log mode previews the drop"
+    Bouncy.configuration.interception = :drop
+    assert_empty ExampleMailer.notice(to: "ada@example.com").deliver_now.smtp_envelope_to
+    assert_equal ["ben@example.com"], ExampleMailer.notice(to: ["ada@example.com", "ben@example.com"]).deliver_now.smtp_envelope_to
+    assert_equal 2, ActionMailer::Base.deliveries.size
+    assert_nil Bouncy.last_sync, "nothing read the provider list"
   end
 
   test "log mode previews exactly what drop mode would do" do

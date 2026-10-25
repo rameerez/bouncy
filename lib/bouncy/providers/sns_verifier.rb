@@ -7,13 +7,71 @@ module Bouncy
     class SnsVerifier
       BODY_LIMIT = 2 * 1024 * 1024
 
+      # Signing certificates, shared by every receiver in the process: each request builds a new
+      # adapter, and an app that subscribes to Send and Delivery events gets one SNS message per
+      # mail. At most 16 certificate URLs, each kept for an hour. Only a certificate that the
+      # allowlisted, bounded download returned is kept; a failed download keeps nothing.
+      class CertificateCache
+        Entry = Data.define(:pem, :fetched_at)
+
+        def initialize(size:, ttl:)
+          @size = size
+          @ttl = ttl
+          @entries = {}
+          @mutex = Mutex.new
+        end
+
+        # The download runs outside the lock, so one slow fetch does not stop other requests.
+        def fetch(url)
+          entry = @mutex.synchronize { @entries[url] }
+          return entry.pem if entry && Time.now - entry.fetched_at < @ttl
+
+          pem = yield
+          @mutex.synchronize do
+            @entries.delete(url)
+            @entries[url] = Entry.new(pem: pem, fetched_at: Time.now)
+            @entries.shift while @entries.size > @size
+          end
+          pem
+        end
+
+        # Drops a certificate that failed a verification, so the next one fetches it again. A
+        # certificate fetched less than `after` seconds ago stays: a stream of forged messages
+        # must not turn into a stream of downloads.
+        def forget(url, after:)
+          @mutex.synchronize do
+            entry = @entries[url]
+            next false unless entry && Time.now - entry.fetched_at >= after
+
+            @entries.delete(url)
+            true
+          end
+        end
+
+        def size = @mutex.synchronize { @entries.size }
+        def clear = @mutex.synchronize { @entries.clear }
+      end
+
+      CERTIFICATES = CertificateCache.new(size: 16, ttl: 3600)
+      # A cached certificate older than this is fetched again, once, when a signature fails.
+      REFETCH_AFTER = 60
+
       class BoundedVerifier < Aws::SNS::MessageVerifier
         private
 
-        def pem(uri)
-          @cached_pems ||= {}
-          @cached_pems.shift if @cached_pems.size >= 32 && !@cached_pems.key?(uri.to_s)
-          super
+        # The SDK's download_pem checks the URL and the PEM framing, and calls the bounded
+        # https_get below. A certificate is cached only once it parses and carries the RSA key
+        # that SNS signs with; any other body is refused and never kept, so the next request
+        # fetches again at once.
+        def pem(uri) = CERTIFICATES.fetch(uri.to_s) { usable(download_pem(uri)) }
+
+        def usable(pem)
+          key = OpenSSL::X509::Certificate.new(pem).public_key
+          raise VerificationError, "The SNS signing certificate has no RSA key" unless key.is_a?(OpenSSL::PKey::RSA)
+
+          pem
+        rescue OpenSSL::X509::CertificateError, OpenSSL::PKey::PKeyError
+          raise VerificationError, "The SNS signing certificate does not parse"
         end
 
         def https_get(uri, _failed_attempts = 0)
@@ -65,7 +123,7 @@ module Bouncy
         end
 
         authorize!(envelope)
-        @mutex.synchronize { @verifier.authenticate!(raw_body) }
+        verify(raw_body, envelope.fetch("SigningCertURL"))
         envelope
       rescue JSON::ParserError, URI::InvalidURIError
         raise MalformedMessage, "Malformed SNS envelope"
@@ -74,6 +132,16 @@ module Bouncy
       end
 
       private
+
+      # A certificate that SNS rotated at the same URL fails once from the cache; it is fetched
+      # again, once, and the message is checked with the new one.
+      def verify(raw_body, url)
+        @mutex.synchronize { @verifier.authenticate!(raw_body) }
+      rescue Aws::SNS::MessageVerifier::VerificationError, OpenSSL::OpenSSLError
+        raise unless @verifier.is_a?(BoundedVerifier) && CERTIFICATES.forget(url, after: REFETCH_AFTER)
+
+        @mutex.synchronize { @verifier.authenticate!(raw_body) }
+      end
 
       def authorize!(envelope)
         topic = envelope.fetch("TopicArn")
@@ -84,7 +152,7 @@ module Bouncy
           raise AuthenticationError, "SNS topic is not authorized"
         end
 
-        suffix = { "aws" => "amazonaws.com", "aws-us-gov" => "amazonaws.com", "aws-cn" => "amazonaws.com.cn" }[parts[1]]
+        suffix = Ses::SNS_DOMAINS[parts[1]]
         uri = URI.parse(envelope.fetch("SigningCertURL"))
         unless suffix && uri.scheme == "https" && uri.host == "sns.#{settings.region}.#{suffix}" &&
                uri.port == 443 && !uri.userinfo && !uri.query && !uri.fragment &&

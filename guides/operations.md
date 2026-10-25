@@ -4,7 +4,7 @@ Bouncy supplies Active Job classes and Rails tasks. It does not install a schedu
 
 ## Schedule the jobs
 
-Run `Bouncy::SyncJob` hourly and `Bouncy::PruneJob` daily. Both use the `default` queue. Ensure a worker consumes it; enqueuing a job is not evidence that it ran.
+Run `Bouncy::SyncJob` hourly and `Bouncy::PruneJob` daily. Both use the `default` queue. While `config.scope` is unset, both return at once with one info line and touch neither AWS nor the database, so a schedule set up before the feature is on does not fill the failed-jobs list; `Bouncy.sync!` itself still raises. Ensure a worker consumes it; enqueuing a job is not evidence that it ran.
 
 For an app already using [Solid Queue recurring tasks](https://github.com/rails/solid_queue#recurring-tasks):
 
@@ -64,7 +64,7 @@ A successful authoritative summary has `complete: true`, `enumerated: true`, `po
 
 `entries` counts exact provider entries; address counts are normalized. Metadata-only refreshes and unchanged restrictions do not emit per-address change events. Each completed reconciliation still emits a summary. A lock acquisition failure or some configuration/database failures can occur before a summary is recorded; monitor job failures as well as freshness.
 
-Keep the sync interval shorter than `stale_after` (default two hours). If the mirror is stale or a newer sync reports unverified policy, the interceptor stops dropping based on provider/webhook evidence. Independent manual and active soft holds remain effective. The status API can still show historical restrictions; it describes evidence, not the current transport decision.
+Keep the sync interval shorter than `stale_after` (default two hours). If the mirror is stale or a newer sync reports unverified policy, the interceptor stops dropping based on provider/webhook evidence. An app that runs no sync sets `config.require_fresh_sync = false`: every recorded block then drops mail, and nothing clears a webhook block on its own. Independent manual and active soft holds remain effective. The status API can still show historical restrictions; it describes evidence, not the current transport decision.
 
 A host health check can use `Bouncy.sync_fresh?` and rescue recognized database outages to report an unhealthy dependency. Decide in the host whether to expose this as a separate email-health indicator or affect overall readiness. Do not expose address history or provider diagnostics in an unauthenticated health response.
 
@@ -80,9 +80,11 @@ end
 
 Implement the example jobs in the host. Callbacks receive a committed `Bouncy::Event`. `after_event` runs for every newly created event, including sync summaries and interception observations. `after_block` runs when `details["became_blocked"]` is true, not for every repeated bounce. `after_release` runs for explicit `release` events, including local-only releases; it does not run for `sync_released`. Use `after_event` with a kind check if you need to observe reconciliation releases.
 
-Hooks are best effort. Exceptions emit `hook_error.bouncy` with `hook` and `error_class`, and do not undo the event. A process can stop after commit before notification completes. Use idempotent consumers and a host outbox/reconciliation mechanism for guaranteed external work. Jobs should tolerate an event being pruned before execution.
+These hooks are best effort. Exceptions emit `hook_error.bouncy` with `hook` and `error_class`, and do not undo the event. They run after the commit of the outermost transaction, after Bouncy released every address lock of it, and, for a write inside `Bouncy.hold`, when the hold ends. A rollback drops them. Rails transactional tests keep 0.1's timing. Bouncy marks the fixture transaction of each pool that `ActiveRecord::TestFixtures` enrolls, as listed in its own `@fixture_connection_pools`: at `setup_transactional_fixtures`, and for a pool established later from a `!connection.active_record` subscriber that runs after Rails' own. It clears the marks in `teardown_transactional_fixtures` (Rails 7.2, 8.0 and 8.1). While a marked transaction is the only one open, hooks run when the app's own transaction commits. A database excluded with `skip_transactional_tests_for_database` (Rails 8.1), or a connection pinned in any other way, keeps the outer-commit rule. A process can stop after commit before notification completes. Use idempotent consumers and a host outbox/reconciliation mechanism for guaranteed external work. Jobs should tolerate an event being pruned before execution.
 
-Other Active Support notifications are `unconfigured.bouncy` (operation attempted while inactive) and `unavailable.bouncy` (interception encounters a recognized database outage). Subscribe using your existing instrumentation:
+`config.on_notification` is different: it runs synchronously in the receiver, with every SES notification, and its failure is not swallowed. A raise emits `hook_error.bouncy` with `hook: :on_notification`, logs the error class and answers 503, so SNS delivers the notification again. Keep it short and idempotent; see [SES notifications](api.md#ses-notifications).
+
+Other Active Support notifications are `unconfigured.bouncy` (operation attempted while inactive, including `hold`) and `unavailable.bouncy` (interception encounters a recognized database outage). Subscribe using your existing instrumentation:
 
 ```ruby
 ActiveSupport::Notifications.subscribe("hook_error.bouncy") do |*args|
