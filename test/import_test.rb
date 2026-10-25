@@ -138,7 +138,8 @@ class ImportTest < BouncyTest
 
     Bouncy.import!("ada@example.com", reason: :complaint, at: at)
     refute Bouncy.blocked?("ada@example.com")
-    assert Bouncy.events.where(kind: "imported").recent.first.details["ignored_for_policy"]
+    fenced = Bouncy.events.where(kind: "imported").detect { |event| event.details["reason"] == "complaint" }
+    assert fenced.details["ignored_for_policy"], "both events occurred at the same time, so the id cannot order them"
 
     Bouncy.import!("ben@example.com", reason: :manual, at: at)
     Bouncy.release!("ben@example.com", at: :local)
@@ -198,6 +199,115 @@ class ImportTest < BouncyTest
     assert_equal :accepted, Bouncy::Ingestor.new.call(observation)
     assert_equal :duplicate, Bouncy::Ingestor.new.call(observation)
     assert Bouncy.blocked?("ada@example.com")
+  end
+end
+
+# Imports from independent connections and in separate scopes.
+class ImportIsolationTest < BouncyTest
+  # The importer of these tests counts the imports inside its critical section at once, and asks
+  # another connection whether the address lock is free there. The first import waits inside:
+  # under the lock no other import of the address can enter.
+  def counting_importer(seen)
+    test = self
+    Class.new(Bouncy::Importer) do
+      define_method(:record) do |row, *arguments, **options|
+        seen[:guard].synchronize { seen[:most] = [seen[:most], seen[:inside] += 1].max }
+        seen[:guard].synchronize { seen[:locked] << test.address_locked?(row.email) }
+        sleep 0.3
+        super(row, *arguments, **options)
+      ensure
+        seen[:guard].synchronize { seen[:inside] -= 1 }
+      end
+      private :record
+    end
+  end
+
+  # Tries the shared side of the address lock on another connection, without waiting.
+  def address_locked?(email)
+    Thread.new do
+      Bouncy::Record.connection_pool.with_connection do |connection|
+        case connection.adapter_name
+        when "PostgreSQL"
+          key = Bouncy::AddressLock.advisory_key(email)
+          free = connection.select_value("SELECT pg_try_advisory_lock_shared(#{key})")
+          connection.select_value("SELECT pg_advisory_unlock_shared(#{key})") if free
+          !free
+        when /Mysql|Trilogy/i
+          name = Digest::SHA256.hexdigest("bouncy:address:#{connection.pool.db_config.database}:#{Bouncy.scope}:#{email}")
+          connection.uncached { connection.select_value("SELECT IS_FREE_LOCK(#{connection.quote(name)})") }.to_i.zero?
+        else
+          File.open(Bouncy::AddressLock.lock_path(connection), File::RDWR | File::CREAT) { |file| file.flock(File::LOCK_SH | File::LOCK_NB) == false }
+        end
+      end
+    end.value
+  end
+
+  # PostgreSQL and MySQL already give each thread its own connection. In-memory SQLite exists on
+  # one connection only, so the models get a file database of their own.
+  def with_independent_connections
+    return yield unless ActiveRecord::Base.connection.adapter_name == "SQLite"
+
+    Dir.mktmpdir("bouncy-import") do |directory|
+      Bouncy::Record.establish_connection(adapter: "sqlite3", database: File.join(directory, "bouncy.sqlite3"), pool: 5, timeout: 10_000)
+      CreateBouncyTables.new.exec_migration(Bouncy::Record.connection, :up)
+      assert_not_same ActiveRecord::Base.connection, Bouncy::Record.connection
+      yield
+    ensure
+      Bouncy::Record.remove_connection
+    end
+  end
+
+  # The address has a row already, as after any earlier event, so no unique index orders the
+  # imports: only the address lock does.
+  test "simultaneous imports of one address on independent connections write one suppression and one event" do
+    with_independent_connections do
+      observe("ada@example.com", kind: "soft_bounce")
+      seen = { guard: Mutex.new, inside: 0, most: 0, locked: [] }
+      at = 1.year.ago
+      ready = Queue.new
+      go = Queue.new
+      importer = counting_importer(seen).new
+      Bouncy::Importer.stub(:new, -> { importer }) do
+        workers = 2.times.map do
+          Thread.new do
+            Bouncy::Record.connection_pool.with_connection do
+              ready << true
+              go.pop
+              Bouncy.import!("ada@example.com", reason: :hard_bounce, at: at)
+              :imported
+            end
+          rescue StandardError => e
+            e
+          end
+        end
+        2.times { ready.pop }
+        2.times { go << true }
+        assert_equal %i[imported imported], workers.map(&:value)
+      end
+      assert_equal [true], seen[:locked], "the import holds the address lock, and only one import gets inside"
+      assert_equal 1, seen[:most]
+      assert_equal 1, Bouncy::Suppression.count
+      assert_equal 1, Bouncy.events.where(kind: "imported").count
+      assert_equal :hard_bounce, Bouncy.status("ada@example.com").reason
+    end
+  end
+
+  test "the same address, reason and time in two scopes are two independent blocks" do
+    at = 1.year.ago
+    other = "ses:210987654321:eu-west-1:account"
+    Bouncy.import!("ada@example.com", reason: :complaint, at: at)
+    Bouncy.configuration.scope = other
+    Bouncy.import!("ada@example.com", reason: :complaint, at: at)
+
+    assert_equal 2, Bouncy::Suppression.where(email: "ada@example.com").count
+    assert_equal 2, Bouncy::Event.where(kind: "imported").distinct.count(:dedupe_key)
+    assert Bouncy.blocked?("ada@example.com")
+    Bouncy.forget!("ada@example.com")
+    refute Bouncy.blocked?("ada@example.com")
+
+    Bouncy.configuration.scope = "ses:123456789012:us-east-1:account"
+    assert_equal [:complaint, at.floor(6)], [Bouncy.status("ada@example.com").reason, Bouncy.status("ada@example.com").blocked_at]
+    assert_equal 1, Bouncy.events.where(kind: "imported").count
   end
 end
 
