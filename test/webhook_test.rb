@@ -167,6 +167,85 @@ class WebhookTest < BouncyTest
     assert_equal 1, Bouncy.events.where(kind: "subscription_confirmed").count
   end
 
+  test "messages that name one signing certificate fetch it once, a new URL fetches again, and an expired one is fetched again" do
+    other = "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-other.pem"
+    stub_request(:get, other).to_return(body: CERT.to_pem)
+    assert_equal 200, post(signed_envelope("MessageId" => "m-1"))
+    assert_equal 200, post(signed_envelope("MessageId" => "m-2"))
+    assert_requested :get, CERT_URL, times: 1
+    assert_equal 200, post(signed_envelope("MessageId" => "m-3", "SigningCertURL" => other))
+    assert_requested :get, other, times: 1
+    travel 61.minutes
+    assert_equal 200, post(signed_envelope("MessageId" => "m-4"))
+    assert_requested :get, CERT_URL, times: 2
+  end
+
+  test "a certificate rotated at the same URL is fetched again once, but not within a minute of the last fetch" do
+    key = OpenSSL::PKey::RSA.new(2048)
+    rotated = OpenSSL::X509::Certificate.new.tap do |cert|
+      cert.version = 2
+      cert.serial = 2
+      cert.subject = cert.issuer = OpenSSL::X509::Name.parse("/CN=sns.us-east-1.amazonaws.com")
+      cert.public_key = key.public_key
+      cert.not_before = Time.now - 3600
+      cert.not_after = Time.now + 86_400
+      cert.sign(key, OpenSSL::Digest.new("SHA256"))
+    end
+    assert_equal 200, post(signed_envelope("MessageId" => "m-1"))
+    stub_request(:get, CERT_URL).to_return(body: rotated.to_pem)
+    envelope = JSON.parse(signed_envelope("MessageId" => "m-2"))
+    canonical = Aws::SNS::MessageVerifier::SIGNABLE_KEYS.filter_map { |name| "#{name}\n#{envelope[name]}\n" if envelope[name] }.join
+    envelope["Signature"] = Base64.strict_encode64(key.sign(OpenSSL::Digest.new("SHA256"), canonical))
+
+    assert_equal 401, post(JSON.generate(envelope)), "fetched seconds ago: no second download"
+    assert_requested :get, CERT_URL, times: 1
+    travel 2.minutes
+    assert_equal 200, post(JSON.generate(envelope))
+    assert_requested :get, CERT_URL, times: 2
+  end
+
+  test "every refusal logs one line with its reason and origin, and never an address or the body" do
+    foreign = "arn:aws:sns:us-east-1:999999999999:feedback"
+    log = logged do
+      assert_equal 405, Bouncy::Webhook.new.call("REQUEST_METHOD" => "GET").first
+      assert_equal 400, post("")
+      assert_equal 413, post("x" * (Bouncy::Webhook::BODY_LIMIT + 1))
+      tampered = JSON.parse(signed_envelope)
+      tampered["Message"] += " "
+      assert_equal 401, post(JSON.generate(tampered))
+      assert_equal 401, post(signed_envelope("TopicArn" => foreign))
+      assert_equal 400, post(signed_envelope("Type" => "Other"))
+      Bouncy.configuration.scope = nil
+      assert_equal 503, post(signed_envelope)
+    end
+    lines = log.lines.grep(/\[bouncy\] refused an SNS message/)
+    assert_equal 7, lines.size, log
+    assert_match(/\(405\): method GET is not POST/, lines[0])
+    assert_match(/\(400\): empty body/, lines[1])
+    assert_match(/\(413\): body over/, lines[2])
+    assert_match(/\(401\): SNS signature could not be verified; topic #{TOPIC}/, lines[3])
+    assert_match(/\(401\): SNS topic is not authorized; topic #{foreign}/, lines[4])
+    assert_match(/\(400\): Unsupported SNS control type; topic #{TOPIC}/, lines[5])
+    assert_match(/\(503\): Set config.scope/, lines[6])
+    refute_match(/ada@example.com|ben@example.com|bounceType/i, log)
+  end
+
+  test "a failed subscription confirmation logs the topic and the SubscribeURL host" do
+    url = "https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription&TopicArn=#{TOPIC}&Token=fictional"
+    confirmation = signed_envelope("Type" => "SubscriptionConfirmation", "Token" => "fictional", "SubscribeURL" => url)
+    log = logged do
+      Bouncy.configuration.ses.sns_client.stub_responses(:confirm_subscription, "AuthorizationError")
+      assert_equal 503, post(confirmation)
+      Bouncy.configuration.ses.subscription_confirmation = :subscribe_url
+      stub_request(:get, url).to_return(status: 500)
+      assert_equal 503, post(confirmation)
+    end
+    lines = log.lines.grep(/\[bouncy\] refused an SNS message/)
+    assert_match(/\(503\): AWS request failed \(AuthorizationError\); topic #{TOPIC}; SubscribeURL host sns.us-east-1.amazonaws.com/, lines[0])
+    assert_match(/\(503\): SNS did not confirm the subscription \(HTTP 500\); topic #{TOPIC}; SubscribeURL host sns.us-east-1.amazonaws.com/, lines[1])
+    refute_match(/fictional/, log, "the token stays out of the log")
+  end
+
   test "unexpected implementation errors are not converted into successful ingestion" do
     Bouncy::Ingestor.stub(:new, -> { raise NoMethodError, "bug" }) do
       assert_raises(NoMethodError) { post(signed_envelope) }

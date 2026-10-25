@@ -76,7 +76,7 @@ SDK gems remain host dependencies even when injecting clients. See [SES setup](a
 
 ## Development and test environments
 
-Leave `scope` unset in environments that should not use Bouncy. Status reports `:unconfigured`, relations are empty, the interceptor leaves mail untouched and one warning is logged per process. Explicit mutations and sync raise `Bouncy::ConfigurationError`; the receiver returns 503.
+Leave `scope` unset in environments that should not use Bouncy. Status reports `:unconfigured`, relations are empty, the interceptor leaves mail untouched and one warning is logged per process. Explicit mutations and sync raise `Bouncy::ConfigurationError`; the receiver returns 503 and logs the refusal. `Bouncy::SyncJob` and `Bouncy::PruneJob` skip with one info line.
 
 `:off` only disables interception. It does not disable configured webhooks, synchronization or explicit mutations. A test that exercises those paths needs an isolated database and stubbed provider clients. Never use production credentials for an offline test.
 

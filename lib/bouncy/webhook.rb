@@ -5,15 +5,16 @@ module Bouncy
     BODY_LIMIT = 2 * 1024 * 1024
 
     def call(environment)
-      return response(405) unless environment["REQUEST_METHOD"] == "POST"
+      method = environment["REQUEST_METHOD"]
+      return refuse(405, "method #{printable(method)} is not POST") unless method == "POST"
 
       # An unconfigured receiver answers 503 so the provider retries later instead of
       # treating the endpoint as broken or, worse, as having accepted the notification.
       Bouncy.configuration.validate!
       body = environment.fetch("rack.input").read(BODY_LIMIT + 1).to_s
-      return response(400) if body.empty?
+      return refuse(400, "empty body") if body.empty?
 
-      return response(413) if body.bytesize > BODY_LIMIT
+      return refuse(413, "body over #{BODY_LIMIT} bytes") if body.bytesize > BODY_LIMIT
 
       adapter = Bouncy.adapter
       envelope = adapter.authenticate(raw_body: body, headers: environment)
@@ -24,15 +25,41 @@ module Bouncy
         return response(503) unless notified?(adapter, envelope)
       end
       response(200)
-    rescue AuthenticationError
-      response(401)
-    rescue MalformedMessage
-      response(400)
-    rescue ProviderError, ConfigurationError, ActiveRecord::ActiveRecordError
-      response(503)
+    rescue AuthenticationError => e
+      refuse(401, e.message, body)
+    rescue MalformedMessage => e
+      refuse(400, e.message, body)
+    rescue ProviderError, ConfigurationError => e
+      refuse(503, e.message, body)
+    rescue ActiveRecord::ActiveRecordError => e
+      # A database message can quote a statement and its values, so only the class is logged.
+      refuse(503, e.class.name, body)
     end
 
     private
+
+    # One warning per refused message: how a dead subscription is found in production. It names
+    # the reason and where the message claims to come from, never an address or the body.
+    def refuse(status, reason, body = nil)
+      Rails.logger&.warn("[bouncy] refused an SNS message (#{status}): #{reason}#{origin(body)}")
+      response(status)
+    end
+
+    def origin(body)
+      envelope = JSON.parse(body.to_s, max_nesting: 30)
+      return "" unless envelope.is_a?(Hash)
+
+      topic = envelope["TopicArn"]
+      subscribe_url = envelope["SubscribeURL"] if envelope["Type"] == "SubscriptionConfirmation"
+      parts = []
+      parts << "topic #{printable(topic)}" if topic.is_a?(String)
+      parts << "SubscribeURL host #{printable(URI.parse(subscribe_url).host)}" if subscribe_url.is_a?(String)
+      parts.map { |part| "; #{part}" }.join
+    rescue JSON::ParserError, URI::InvalidURIError
+      ""
+    end
+
+    def printable(value) = value.to_s.gsub(/[^[:print:]]/, "?")[0, 256]
 
     # config.on_notification runs after the state committed, outside Bouncy's locks, and before
     # the answer. A failure answers 503, so SNS delivers the notification again; the repeat

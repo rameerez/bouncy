@@ -7,14 +7,61 @@ module Bouncy
     class SnsVerifier
       BODY_LIMIT = 2 * 1024 * 1024
 
+      # Signing certificates, shared by every receiver in the process: each request builds a new
+      # adapter, and an app that subscribes to Send and Delivery events gets one SNS message per
+      # mail. At most 16 certificate URLs, each kept for an hour. Only a certificate that the
+      # allowlisted, bounded download returned is kept; a failed download keeps nothing.
+      class CertificateCache
+        Entry = Data.define(:pem, :fetched_at)
+
+        def initialize(size:, ttl:)
+          @size = size
+          @ttl = ttl
+          @entries = {}
+          @mutex = Mutex.new
+        end
+
+        # The download runs outside the lock, so one slow fetch does not stop other requests.
+        def fetch(url)
+          entry = @mutex.synchronize { @entries[url] }
+          return entry.pem if entry && Time.now - entry.fetched_at < @ttl
+
+          pem = yield
+          @mutex.synchronize do
+            @entries.delete(url)
+            @entries[url] = Entry.new(pem: pem, fetched_at: Time.now)
+            @entries.shift while @entries.size > @size
+          end
+          pem
+        end
+
+        # Drops a certificate that failed a verification, so the next one fetches it again. A
+        # certificate fetched less than `after` seconds ago stays: a stream of forged messages
+        # must not turn into a stream of downloads.
+        def forget(url, after:)
+          @mutex.synchronize do
+            entry = @entries[url]
+            next false unless entry && Time.now - entry.fetched_at >= after
+
+            @entries.delete(url)
+            true
+          end
+        end
+
+        def size = @mutex.synchronize { @entries.size }
+        def clear = @mutex.synchronize { @entries.clear }
+      end
+
+      CERTIFICATES = CertificateCache.new(size: 16, ttl: 3600)
+      # A cached certificate older than this is fetched again, once, when a signature fails.
+      REFETCH_AFTER = 60
+
       class BoundedVerifier < Aws::SNS::MessageVerifier
         private
 
-        def pem(uri)
-          @cached_pems ||= {}
-          @cached_pems.shift if @cached_pems.size >= 32 && !@cached_pems.key?(uri.to_s)
-          super
-        end
+        # The SDK's download_pem checks the URL and the PEM format, and calls the bounded
+        # https_get below.
+        def pem(uri) = CERTIFICATES.fetch(uri.to_s) { download_pem(uri) }
 
         def https_get(uri, _failed_attempts = 0)
           body = +""
@@ -65,7 +112,7 @@ module Bouncy
         end
 
         authorize!(envelope)
-        @mutex.synchronize { @verifier.authenticate!(raw_body) }
+        verify(raw_body, envelope.fetch("SigningCertURL"))
         envelope
       rescue JSON::ParserError, URI::InvalidURIError
         raise MalformedMessage, "Malformed SNS envelope"
@@ -74,6 +121,16 @@ module Bouncy
       end
 
       private
+
+      # A certificate that SNS rotated at the same URL fails once from the cache; it is fetched
+      # again, once, and the message is checked with the new one.
+      def verify(raw_body, url)
+        @mutex.synchronize { @verifier.authenticate!(raw_body) }
+      rescue Aws::SNS::MessageVerifier::VerificationError, OpenSSL::OpenSSLError
+        raise unless @verifier.is_a?(BoundedVerifier) && CERTIFICATES.forget(url, after: REFETCH_AFTER)
+
+        @mutex.synchronize { @verifier.authenticate!(raw_body) }
+      end
 
       def authorize!(envelope)
         topic = envelope.fetch("TopicArn")

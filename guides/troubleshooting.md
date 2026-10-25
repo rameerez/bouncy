@@ -30,7 +30,7 @@ Release never resends the original email. Regenerate time-sensitive links in an 
 - If `Bouncy.status(address).knowledge` is `:unconfigured`, `config.scope` is blank and Bouncy is inactive in that environment.
 - Confirm the SNS HTTPS subscription is active and points at the actual mounted route.
 - Confirm SES routes the needed event types to that topic, and raw SNS message delivery is disabled.
-- Inspect bounded receiver status codes: 401 authorization/signature, 400 malformed input, 413 body limit, 503 retryable infrastructure failure, a failed `SubscribeURL` visit or a raise in `config.on_notification`.
+- Inspect bounded receiver status codes: 401 authorization/signature, 400 malformed input, 413 body limit, 503 retryable infrastructure failure, a failed `SubscribeURL` visit or a raise in `config.on_notification`. Each refusal logs `[bouncy] refused an SNS message (<status>): <reason>; topic <ARN>`; a failed confirmation also names the `SubscribeURL` host.
 - Run a complete sync and verify the scheduled job actually runs in production.
 
 An hourly sync cannot reconstruct every lost delivery or soft-bounce event. SNS retries and operational monitoring still matter.

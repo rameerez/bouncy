@@ -13,14 +13,27 @@ class SnsVerifierTest < BouncyTest
     assert Bouncy::Providers::SnsVerifier.new(Bouncy.configuration)
   end
 
-  test "the certificate cache is bounded and tolerates a missing cache" do
-    verifier = Bouncy::Providers::SnsVerifier::BoundedVerifier.new
-    verifier.instance_variable_set(:@cached_pems, nil)
-    verifier.stub(:download_pem, ->(uri) { "pem for #{uri}" }) do
-      33.times { |index| verifier.send(:pem, URI("https://sns.us-east-1.amazonaws.com/SimpleNotificationService-#{index}.pem")) }
-      assert_equal 32, verifier.instance_variable_get(:@cached_pems).size
-      assert_equal "pem for https://sns.us-east-1.amazonaws.com/SimpleNotificationService-32.pem",
-                   verifier.send(:pem, URI("https://sns.us-east-1.amazonaws.com/SimpleNotificationService-32.pem"))
+  test "the certificate cache keeps at most 16 URLs for an hour, across verifiers" do
+    cache = Bouncy::Providers::SnsVerifier::CERTIFICATES
+    downloads = []
+    url = ->(index) { "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-#{index}.pem" }
+    download = lambda do |verifier, index|
+      verifier.stub(:download_pem, ->(uri) { downloads << uri.to_s and "pem #{uri}" }) { verifier.send(:pem, URI(url.call(index))) }
     end
+
+    17.times { |index| download.call(Bouncy::Providers::SnsVerifier::BoundedVerifier.new, index) }
+    assert_equal 16, cache.size
+    download.call(Bouncy::Providers::SnsVerifier::BoundedVerifier.new, 16)
+    assert_equal 17, downloads.size, "a new verifier still finds the cached certificate"
+    download.call(Bouncy::Providers::SnsVerifier::BoundedVerifier.new, 0)
+    assert_equal 18, downloads.size, "the oldest certificate left the cache"
+
+    travel 61.minutes
+    download.call(Bouncy::Providers::SnsVerifier::BoundedVerifier.new, 16)
+    assert_equal 19, downloads.size, "an expired certificate is fetched again"
+    refute cache.forget(url.call(16), after: 60), "a certificate fetched less than a minute ago stays"
+    travel 2.minutes
+    assert cache.forget(url.call(16), after: 60)
+    refute cache.forget(url.call(99), after: 60)
   end
 end

@@ -4,7 +4,7 @@ Bouncy supplies Active Job classes and Rails tasks. It does not install a schedu
 
 ## Schedule the jobs
 
-Run `Bouncy::SyncJob` hourly and `Bouncy::PruneJob` daily. Both use the `default` queue. Ensure a worker consumes it; enqueuing a job is not evidence that it ran.
+Run `Bouncy::SyncJob` hourly and `Bouncy::PruneJob` daily. Both use the `default` queue. While `config.scope` is unset, both return at once with one info line and touch neither AWS nor the database, so a schedule set up before the feature is on does not fill the failed-jobs list; `Bouncy.sync!` itself still raises. Ensure a worker consumes it; enqueuing a job is not evidence that it ran.
 
 For an app already using [Solid Queue recurring tasks](https://github.com/rails/solid_queue#recurring-tasks):
 

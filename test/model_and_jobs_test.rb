@@ -54,6 +54,22 @@ class ModelAndJobsTest < BouncyTest
     refute Bouncy.blocked?("ada@example.com")
   end
 
+  test "scheduled jobs do nothing while Bouncy is unconfigured" do
+    Bouncy.configuration.scope = nil
+    queries = 0
+    counter = ->(*, payload) { queries += 1 unless %w[SCHEMA TRANSACTION].include?(payload[:name]) }
+    log = logged do
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record") do
+        Bouncy::SyncJob.perform_now
+        Bouncy::PruneJob.perform_now
+      end
+    end
+    assert_equal 0, queries
+    assert_equal 1, log.scan("Bouncy::SyncJob skipped: config.scope is not set").size
+    assert_equal 1, log.scan("Bouncy::PruneJob skipped: config.scope is not set").size
+    assert_raises(Bouncy::ConfigurationError) { Bouncy.sync! }
+  end
+
   test "configuration rejects unsafe retention and invalid interception" do
     Bouncy.configuration.scope = nil
     assert_raises(Bouncy::ConfigurationError) { Bouncy.scope }

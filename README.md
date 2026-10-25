@@ -31,7 +31,7 @@ Check out my other 💎 Ruby gems: [`nondisposable`](https://github.com/rameerez
 ## What you get
 
 - A local mirror of the SES account suppression list, including restrictions from before installation and other apps on the same account.
-- Signed SNS webhooks for new bounces and complaints, with exact-topic authorization and per-recipient deduplication.
+- Signed SNS webhooks for new bounces and complaints, with exact-topic authorization, per-recipient deduplication, a cached signing certificate and one log line per refused message.
 - Address status, model predicates and scopes, and batch lookups for badges on your lists.
 - Action Mailer interception that checks To, Cc, Bcc and the SMTP envelope, keeps display names, and stops bang deliveries too.
 - `Bouncy.hold` for senders that check an address and send in one step, and a synchronous hook for every SES event.
@@ -100,6 +100,12 @@ config.middleware.insert_before 0, Bouncy::BodyLimit, path: "/bouncy/webhooks/se
 
 Use the path your app routes to the receiver. The limit covers that path with a trailing slash or a format suffix, and also the full path when the app runs under a prefix; adjacent routes are untouched. The receiver keeps its own 2 MiB limit as well.
 
+The receiver logs one warning for each message it refuses, with the status, the reason and the topic ARN (or the `SubscribeURL` host of a failed confirmation), and never an address or the body. That line is how a dead subscription shows up in production:
+
+```text
+[bouncy] refused an SNS message (401): SNS topic is not authorized; topic arn:aws:sns:us-east-1:999999999999:feedback
+```
+
 Follow the [SES setup guide](guides/amazon-ses.md) to connect bounce and complaint notifications to **`POST /bouncy/webhooks/ses`**. Deploy the allowlisted receiver before subscribing the SNS topic. Bouncy does not create or change your AWS configuration.
 
 Check the policy and import the suppression list:
@@ -111,7 +117,7 @@ bin/rails bouncy:sync
 
 Schedule `Bouncy::SyncJob` **hourly** and `Bouncy::PruneJob` **daily** with your existing job system. The [operations guide](guides/operations.md) includes scheduling examples and monitoring checks. After reviewing a complete, verified sync and testing delivery in staging, change `config.interception` to `:drop`.
 
-Until `config.scope` is set, Bouncy is inactive: mail goes out untouched and status reports `:unconfigured`. Explicit sync, block, release and erasure operations raise. No database or AWS call runs just from loading the gem.
+Until `config.scope` is set, Bouncy is inactive: mail goes out untouched and status reports `:unconfigured`. Explicit sync, block, release and erasure operations raise. `Bouncy::SyncJob` and `Bouncy::PruneJob` skip with one info line instead, so a job you schedule before the feature is on does not fail every run. No database or AWS call runs just from loading the gem.
 
 ## Usage
 
