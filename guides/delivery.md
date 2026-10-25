@@ -42,9 +42,11 @@ end
 
 A wait that times out raises `ActiveRecord::LockWaitTimeout`; the receiver answers 503 and SNS retries. A write inside the same connection's own hold does not wait for itself. The hold needs no migration. Unconfigured, `Bouncy.hold` only runs the block.
 
-The check must see the latest committed state, not an older snapshot. Inside a hold, `Bouncy.status`, `Bouncy.blocked?`, `Bouncy.statuses` and the gate read with `LOCK IN SHARE MODE` on MySQL, which reads the latest committed row at any isolation level. PostgreSQL reads the latest state with every statement at READ COMMITTED, its default. Under PostgreSQL REPEATABLE READ or SERIALIZABLE, and on SQLite, the snapshot starts at the transaction's first read: take the hold before it.
+The check must see the latest committed state, not an older snapshot. Inside a hold, `Bouncy.status`, `Bouncy.blocked?`, `Bouncy.statuses` and the gate read with `LOCK IN SHARE MODE` on MySQL, which reads the latest committed row at any isolation level. PostgreSQL reads the latest state with every statement at READ COMMITTED, its default.
 
-Hooks never run inside a lock. A write releases its address at its commit, before any `after_commit` callback, and the hooks of a write made inside a hold run when the hold ends.
+At PostgreSQL REPEATABLE READ or SERIALIZABLE, the statement that takes the lock fixes the transaction's snapshot before it waits, so a block committed during the wait stays invisible. `Bouncy.hold` inside such a transaction therefore raises `Bouncy::ConfigurationError` at once. Hold the address outside the transaction instead, around it: the session-level lock lasts until the block ends, and the snapshot starts after the lock. On SQLite, whose snapshot starts at a transaction's first read, use the same pattern, or take the hold before the transaction reads anything.
+
+Hooks never run inside a lock. A write releases its address when the outermost transaction ends, and the hooks wait for that transaction's commit: after a commit callback of a `transaction(joinable: false)` savepoint they still wait for the outer transaction, and a rollback drops them. Transactional tests run inside such a transaction, which rolls back, so Bouncy's hooks do not run there; test them with `self.use_transactional_tests = false`. The hooks of a write made inside a hold run when the hold ends.
 
 ## Direct sends and other senders
 

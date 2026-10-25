@@ -191,6 +191,60 @@ class SqliteHoldTest < BouncyTest
     end
   end
 
+  test "without the event subscription, the transaction's own callbacks release at commit and rollback" do
+    with_file_database do |path|
+      Bouncy::AddressLock.stub(:transaction_ended, ->(*) {}) do
+        Bouncy::Suppression.transaction { Bouncy.block!("ada@example.com", note: "Hold") }
+        assert lockable?(path, File::LOCK_EX), "released at the commit"
+        Bouncy::Suppression.transaction do
+          Bouncy.hold("ben@example.com") { :sent }
+          raise ActiveRecord::Rollback
+        end
+        assert lockable?(path, File::LOCK_EX), "released at the rollback"
+        Bouncy::Suppression.transaction do
+          Bouncy::Suppression.transaction(requires_new: true) do
+            Bouncy.block!("cleo@example.com", note: "Hold")
+            raise ActiveRecord::Rollback
+          end
+          refute lockable?(path, File::LOCK_SH), "a savepoint's rollback keeps the lock for the outer transaction"
+        end
+        assert lockable?(path, File::LOCK_EX), "released when the outer transaction ends"
+      end
+    end
+  end
+
+  test "a connection that goes back to the pool releases what both other paths missed" do
+    with_file_database do |path|
+      thread = Thread.new do
+        ActiveRecord::Base.connection_pool.with_connection do |connection|
+          connection.stub(:adapter_name, "SQLite") do
+            Bouncy::AddressLock::DEFERRED[connection] = [Bouncy::AddressLock.take(connection, "ada@example.com", exclusive: true)]
+          end
+          refute lockable?(path, File::LOCK_SH)
+        end
+      end
+      thread.join(5)
+      assert lockable?(path, File::LOCK_EX)
+    end
+  end
+
+  test "under a non-joinable transaction, hooks wait for its commit and are dropped on its rollback" do
+    with_file_database do |path|
+      seen = []
+      Bouncy.configuration.after_block = ->(event) { seen << [event.email, lockable?(path, File::LOCK_EX)] }
+      Bouncy::Suppression.transaction(joinable: false) do
+        Bouncy.block!("ada@example.com", note: "Hold")
+        assert_empty seen, "the outer transaction still holds the lock"
+      end
+      assert_equal [["ada@example.com", true]], seen
+      Bouncy::Suppression.transaction(joinable: false) do
+        Bouncy.block!("ben@example.com", note: "Hold")
+        raise ActiveRecord::Rollback
+      end
+      assert_equal [["ada@example.com", true]], seen, "a rolled-back block has no hook"
+    end
+  end
+
   test "a lock whose transaction end went unreported is settled before the next use" do
     with_file_database do |path|
       connection = ActiveRecord::Base.connection
@@ -423,7 +477,78 @@ if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
       go << true
     end
 
+    test "without the event subscription, the transaction's callbacks and the pool's check-in release" do
+      Bouncy::AddressLock.stub(:transaction_ended, ->(*) {}) do
+        in_thread { Bouncy::Suppression.transaction { Bouncy.block!("ana@example.com", note: "Hold") } }.join(5)
+        assert free?("ana@example.com"), "released at the commit"
+        in_thread do
+          Bouncy::Suppression.transaction do
+            Bouncy.hold("bea@example.com") { :sent }
+            raise ActiveRecord::Rollback
+          end
+        end.join(5)
+        assert free?("bea@example.com"), "released at the rollback"
+      end
+      in_thread do |connection|
+        Bouncy::AddressLock::DEFERRED[connection] = [Bouncy::AddressLock.take(connection, "cleo@example.com", exclusive: true)].compact
+      end.join(5)
+      assert free?("cleo@example.com"), "released when the connection went back to the pool"
+    end
+
+    test "under a non-joinable transaction, hooks run after its commit, when the address is free" do
+      seen = []
+      Bouncy.configuration.after_block = ->(event) { seen << free?(event.email) }
+      Bouncy::Suppression.transaction(joinable: false) do
+        Bouncy.block!("ana@example.com", note: "Hold")
+        assert_empty seen
+      end
+      assert_equal [true], seen
+    end
+
     if ActiveRecord::Base.connection.adapter_name == "PostgreSQL"
+      test "inside a REPEATABLE READ or SERIALIZABLE transaction a hold raises at once, even while a write holds the address" do
+        writing = Queue.new
+        commit = Queue.new
+        in_thread { Bouncy::Store.change("ana@example.com") { |row| writing << true and commit.pop and row } }
+        writing.pop
+        %i[repeatable_read serializable].each do |isolation|
+          error = Timeout.timeout(2) do
+            assert_raises(Bouncy::ConfigurationError) do
+              Bouncy::Suppression.transaction(isolation: isolation) { Bouncy.hold("ana@example.com") { flunk "the block must not run" } }
+            end
+          end
+          assert_match(/outside the transaction/, error.message)
+        end
+      ensure
+        commit << true
+      end
+
+      test "a hold taken outside a REPEATABLE READ transaction sees a block committed while it waited" do
+        writing = Queue.new
+        commit = Queue.new
+        in_thread do
+          Bouncy::Store.change("ana@example.com") do |row|
+            writing << true
+            commit.pop
+            row.manual_blocked_at = Time.current
+            row.manual_note = "Hold"
+            row.summarize!
+            row
+          end
+        end
+        writing.pop
+        sender = in_thread do
+          Bouncy.hold("ana@example.com") do
+            Bouncy::Suppression.transaction(isolation: :repeatable_read) { Bouncy.blocked?("ana@example.com") }
+          end
+        end
+        assert_nil sender.join(0.3), "the sender waits for the write"
+        commit << true
+        assert_equal true, sender.value
+      ensure
+        commit << true
+      end
+
       test "two addresses that shared the old 28-bit key do not wait for each other" do
         holding = Queue.new
         done = Queue.new

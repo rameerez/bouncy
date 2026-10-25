@@ -195,6 +195,25 @@ class MailDeliveryTest < BouncyTest
     RewritingInterceptor.replacement = nil
   end
 
+  test "a message delivered once is judged again at each delivery: bypass, mode and scope" do
+    message = DeliveryMailer.notice(to: "ana@example.com").message
+    message.deliver
+    assert_instance_of Bouncy::Interceptor::Gate, message.delivery_method
+    Bouncy.block!("ana@example.com", note: "Hold")
+
+    Bouncy.unblocked { message.deliver }
+    Bouncy.configuration.interception = :off
+    message.deliver
+    Bouncy.configuration.interception = :drop
+    Bouncy.configuration.scope = nil
+    message.deliver
+    Bouncy.configuration.scope = "ses:123456789012:us-east-1:account"
+    assert_equal [["ana@example.com"]] * 4, ActionMailer::Base.deliveries.map(&:smtp_envelope_to)
+
+    message.deliver
+    assert_equal 4, ActionMailer::Base.deliveries.size, "back in :drop mode the gate drops it"
+  end
+
   test "the gate keeps the transport's settings and methods visible" do
     mail = DeliveryMailer.notice(to: "ana@example.com").deliver_now
     gate = mail.delivery_method

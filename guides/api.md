@@ -118,7 +118,7 @@ All gem errors inherit from `Bouncy::Error`:
 | Error | Meaning / response |
 |---|---|
 | `InvalidAddress` | Invalid lookup/mutation/hold input; correct the address. |
-| `ConfigurationError` | Missing or invalid setup; fix configuration or dependencies. |
+| `ConfigurationError` | Missing or invalid setup; fix configuration or dependencies. Also `Bouncy.hold` inside a PostgreSQL REPEATABLE READ or SERIALIZABLE transaction; hold around the transaction instead. |
 | `ProviderError` | Provider/transport failure, or a sync lock already held. Inspect and retry through your job policy. |
 | `UnsafeSnapshot < ProviderError` | Scope mismatch or inability to establish a safe bootstrap/release snapshot. |
 | `ReleaseFailed < ProviderError` | Partial/failed provider release; inspect `error.outcomes` before retrying. |

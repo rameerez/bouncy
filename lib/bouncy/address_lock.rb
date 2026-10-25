@@ -11,13 +11,17 @@ module Bouncy
   # its send, never between them. Inside a transaction, a hold lasts until that transaction ends.
   #
   # PostgreSQL holds transaction-level advisory locks, which it releases itself at the commit
-  # or the rollback. MySQL named locks and SQLite file locks belong to the connection; Bouncy
-  # releases them when the transaction.active_record event reports the end of the outermost
-  # transaction. Rails reports it right after the COMMIT or ROLLBACK, before any after_commit or
-  # after_rollback callback, so a callback that raises cannot keep a lock.
+  # or the rollback. MySQL named locks and SQLite file locks belong to the connection, and three
+  # paths release them at the end of the outermost transaction:
   #
-  # Hooks never run inside a lock: writes release theirs at the commit, before the hooks, and
-  # the hooks of a write inside a hold wait until the hold ends.
+  # 1. the transaction.active_record event, which Rails sends right after the COMMIT or the
+  #    ROLLBACK and before any callback, so a host callback that raises cannot keep a lock;
+  # 2. after_commit and after_rollback on the transaction itself, for a transaction that started
+  #    before Bouncy subscribed to that event;
+  # 3. the connection's return to the pool, for anything both paths missed.
+  #
+  # Hooks never run inside a lock: they wait for the commit of the outermost transaction, which
+  # comes after the releases, and the hooks of a write inside a hold wait until the hold ends.
   module AddressLock
     FileHold = Struct.new(:guard, :file, :mode, :holders)
     FILE_LOCKS = ObjectSpace::WeakKeyMap.new
@@ -30,6 +34,7 @@ module Bouncy
       key = Identity.normalize(email)
       Record.connection_pool.with_connection do |connection|
         settle(connection)
+        require_read_committed(connection)
         release = take(connection, key, exclusive: false)
         depth = ActiveSupport::IsolatedExecutionState[:bouncy_holds].to_i
         ActiveSupport::IsolatedExecutionState[:bouncy_holds] = depth + 1
@@ -57,8 +62,13 @@ module Bouncy
 
     def holding? = ActiveSupport::IsolatedExecutionState[:bouncy_holds].to_i.positive?
 
-    # Runs a hook now, or after the execution's outermost hold when one is open.
-    def after_holds(&hook)
+    # Runs a hook once its connection holds no Bouncy lock. A record's commit callbacks can run
+    # while an outer transaction is still open, under transaction(joinable: false) and in
+    # transactional tests; the hook then moves to that transaction, and so runs after the
+    # commit of the outermost one, or never if it rolls back. Inside a hold it waits for the hold.
+    def after_locks(&hook)
+      connection = Record.connection_pool.active_connection
+      return connection.current_transaction.after_commit { after_locks(&hook) } if connection&.transaction_open?
       return hook.call unless holding?
 
       (ActiveSupport::IsolatedExecutionState[:bouncy_pending_hooks] ||= []) << hook
@@ -75,6 +85,20 @@ module Bouncy
       return if connection.transaction_open?
 
       release_deferred(connection)
+    end
+
+    # Inside a PostgreSQL transaction, a hold must not run at REPEATABLE READ or SERIALIZABLE:
+    # the lock statement fixes the snapshot before it waits, so a block committed during the wait
+    # stays invisible. Hold the address outside the transaction instead; the lock then lasts for
+    # the whole block, and the transaction's snapshot starts after it.
+    def require_read_committed(connection)
+      return unless connection.adapter_name == "PostgreSQL" && connection.transaction_open?
+
+      isolation = connection.uncached { connection.select_value("SHOW transaction_isolation") }
+      return if ["read committed", "read uncommitted"].include?(isolation)
+
+      raise ConfigurationError, "Bouncy.hold inside a PostgreSQL #{isolation} transaction cannot see a block committed while it waits; " \
+                                "call Bouncy.hold outside the transaction, around it"
     end
 
     # Takes the lock now and returns what releases it, or nil when the database releases it.
@@ -170,6 +194,17 @@ module Bouncy
 
       connection.materialize_transactions
       GUARD.synchronize { (DEFERRED[connection] ||= []) << release }
+      watch(connection)
+    end
+
+    # The second path. A savepoint that commits hands both callbacks to its parent; one that
+    # rolls back runs after_rollback while its parent continues, so the watch moves up a level.
+    # It uses the connection's transaction object: the public Record.current_transaction is a
+    # null transaction under transaction(joinable: false), and would run the block at once.
+    def watch(connection)
+      transaction = connection.current_transaction
+      transaction.after_commit { settle(connection) }
+      transaction.after_rollback { connection.transaction_open? ? watch(connection) : settle(connection) }
     end
 
     # Rails pops a committed transaction before it reports the commit, and reports a rollback
@@ -196,6 +231,9 @@ module Bouncy
   end
 
   # Subscribed when the gem loads: Rails gives each transaction the subscribers that exist when
-  # the transaction starts, so a later subscription would miss the transaction that needs it.
+  # the transaction starts, so a later subscription misses it, and the second path covers that.
   ActiveSupport::Notifications.subscribe("transaction.active_record") { |*, payload| AddressLock.transaction_ended(payload) }
+
+  # The third path: a connection goes back to the pool with nothing of Bouncy's still locked.
+  ActiveRecord::ConnectionAdapters::AbstractAdapter.set_callback(:checkin, :after) { AddressLock.release_deferred(self) }
 end

@@ -77,6 +77,23 @@ class BodyLimitTest < BouncyTest
     assert_raises(ArgumentError) { Bouncy::BodyLimit.new(READ_ALL, path: "webhooks/ses") }
   end
 
+  test "an adjacent route gets an oversized body whole and untouched" do
+    limit = Bouncy::BodyLimit::DEFAULT_LIMIT
+    input = CountingInput.new("x" * (limit * 2))
+    seen = nil
+    app = lambda do |environment|
+      body = environment["rack.input"]
+      seen = [body.equal?(input), body.read.bytesize, environment["CONTENT_LENGTH"], environment["HTTP_TRANSFER_ENCODING"]]
+      [200, {}, []]
+    end
+    environment = Rack::MockRequest.env_for("/", method: "POST", input: input).merge("PATH_INFO" => "/webhooks/ses-admin", "CONTENT_LENGTH" => nil,
+                                                                                     "HTTP_TRANSFER_ENCODING" => "chunked")
+    status, = Bouncy::BodyLimit.new(app, path: "/webhooks/ses").call(environment)
+    assert_equal 200, status
+    assert_equal [true, limit * 2, nil, "chunked"], seen
+    assert_equal limit * 2, input.bytes_read, "only the downstream app read it"
+  end
+
   test "an app mounted under a prefix is limited by its routed path or by its full path" do
     limit = Bouncy::BodyLimit::DEFAULT_LIMIT
     mounts = [["/app", "/webhooks/ses", "/webhooks/ses"], ["/app", "/webhooks/ses", "/app/webhooks/ses"],

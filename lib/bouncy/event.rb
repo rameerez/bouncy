@@ -13,10 +13,11 @@ module Bouncy
 
     private
 
-    # Writes release their address locks at the commit, before this runs. Inside a Bouncy.hold
-    # the hooks wait until the hold ends, so no hook runs while Bouncy holds an address.
+    # Writes release their address locks at the commit of the outermost transaction, and the
+    # hooks wait for that commit and for the end of any Bouncy.hold, so no hook runs while
+    # Bouncy holds an address.
     def notify_host
-      AddressLock.after_holds do
+      AddressLock.after_locks do
         Bouncy.notify(:after_event, self)
         Bouncy.notify(:after_block, self) if details["became_blocked"]
         Bouncy.notify(:after_release, self) if kind == "release"

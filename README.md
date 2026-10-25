@@ -168,7 +168,17 @@ end
 
 Every Bouncy write to that address waits for the block. Inside a transaction, the hold lasts until the transaction commits, so the record of the send commits first. Senders to one address do not wait for each other on PostgreSQL and SQLite; on MySQL they take turns. The lock needs no migration.
 
-The check inside the hold must read the latest committed state. On MySQL, Bouncy's reads inside a hold are locking reads, which do that at any isolation level. PostgreSQL does it at READ COMMITTED, its default. With PostgreSQL REPEATABLE READ or SERIALIZABLE, or with SQLite, take the hold before the transaction reads anything: their snapshot starts at the first read. Hooks of a write made inside a hold run when the hold ends.
+The check inside the hold must read the latest committed state. On MySQL, Bouncy's reads inside a hold are locking reads, which do that at any isolation level. PostgreSQL does it at READ COMMITTED, its default; inside a REPEATABLE READ or SERIALIZABLE transaction, `Bouncy.hold` raises `Bouncy::ConfigurationError`, because the transaction's snapshot is fixed before the lock is granted. For those, and on SQLite, hold the address outside the transaction, around it:
+
+```ruby
+Bouncy.hold(order.email) do
+  Order.transaction(isolation: :repeatable_read) do
+    # check, send and record here
+  end
+end
+```
+
+The hold then lasts for the whole block, and the transaction's snapshot starts after it. Hooks of a write made inside a hold run when the hold ends.
 
 ### Help someone recover
 

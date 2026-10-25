@@ -144,8 +144,8 @@ module Bouncy
     # Holds the address while the block runs, so no new block for it can commit between the
     # app's own check and its send. Inside a transaction the hold lasts until the transaction
     # ends. Returns the block's value. Unconfigured, it only runs the block. The check needs the
-    # latest committed state: see current_state, and take the hold before a REPEATABLE READ or
-    # SQLite transaction reads anything.
+    # latest committed state: see current_state. Inside a PostgreSQL REPEATABLE READ or
+    # SERIALIZABLE transaction it raises; hold around such a transaction, and around SQLite ones.
     #
     #   Bouncy.hold(order.email) do
     #     ReceiptMailer.with(order:).receipt.deliver_now unless Bouncy.blocked?(order.email)

@@ -24,7 +24,10 @@ module Bouncy
 
       def settings = transport.settings
 
+      # Bypass, scope and mode are read again at each delivery: a message delivered once keeps
+      # its gate, and can be delivered again under Bouncy.unblocked or another mode.
       def deliver!(message)
+        return transport.deliver!(message) unless Interceptor.active?
         return if Interceptor.new.call(message) == :undeliverable
 
         transport.deliver!(message)
@@ -37,14 +40,18 @@ module Bouncy
     class << self
       def delivering_email(message)
         stamp_configuration_set(message)
-        return if Bouncy.configuration.interception == :off || ActiveSupport::IsolatedExecutionState[:bouncy_unblocked]
+        return if bypassed?
         return Bouncy.unconfigured!("interception") unless Bouncy.configured?
 
         transport = message.delivery_method
         message.delivery_method(Gate, transport) unless transport.is_a?(Gate)
       end
 
+      def active? = !bypassed? && Bouncy.configured?
+
       private
+
+      def bypassed? = Bouncy.configuration.interception == :off || ActiveSupport::IsolatedExecutionState[:bouncy_unblocked]
 
       # SES reads the set from this header and removes it before delivery. A mail that names its
       # own set keeps it. The header does not depend on the interception mode: turning
