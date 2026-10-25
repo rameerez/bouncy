@@ -20,6 +20,7 @@ Bouncy.blocked?("ada@example.com") # Same as status.blocked?
 | `record` | Underlying `Bouncy::Suppression`, or `nil`, for host-owned admin links. |
 | `provider_listed?` | Exact provider entries exist in the local mirror, even if policy verification has not made them enforceable. |
 | `provider_updated_at` | Latest update time among those provider entries, or `nil`. |
+| `blocked_at` | Time the block in force began: when the address became blocked locally, or the `at:` time of the `Bouncy.import!` that blocked it. Stays while further evidence arrives; a block after an expired soft hold starts anew. `nil` when not blocked. |
 | `observed_at` | Provider check time if present, otherwise the last address event time, or `nil`. |
 | `stale?` | True for unavailable/unconfigured knowledge, missing observation time or an observation older than `stale_after`. This is address freshness; use `Bouncy.sync_fresh?` for mirror health. |
 | `policy_unverified?` | A locally listed address whose latest scoped sync did not report verified sending policy. |
@@ -81,6 +82,7 @@ The override applies to status and predicates as well as scopes. Your app must p
 | `Bouncy.blocked` | Scoped ActiveRecord relation of currently restricted suppression rows. |
 | `Bouncy.events` | Scoped event relation; chain `.for(address).recent.limit(50)`. |
 | `Bouncy.block!(address, note:, actor: nil)` | Add a local manual hold; a nonblank note is required. Returns the suppression row. Does not call SES. |
+| `Bouncy.import!(address, reason:, at:, note: nil, actor: nil)` | Record a block that another system recorded at `at`, with `reason` `:hard_bounce`, `:complaint` or `:manual`. Returns the suppression row. Does not call SES. See [imports](#imports). |
 | `Bouncy.release!(address, note: nil, actor: nil, at: :provider)` | Provider-aware release by default, requiring a note and verified provider snapshot. Returns the row; may raise on partial remote success. |
 | `Bouncy.release!(address, at: :local)` | Clear manual and soft holds and their soft-bounce history; fence delayed pre-release soft feedback and preserve provider/webhook blocks. No provider request. A note is optional. |
 | `Bouncy.forget!(address)` | Delete local state and events, including release metadata; no provider mutation. A later sync can reimport the address. |
@@ -93,6 +95,23 @@ The override applies to status and predicates as well as scopes. Your app must p
 | `Bouncy.scope` | Configured scope after local configuration validation. |
 | `Bouncy.unblocked { ... }` | Temporarily bypass interception for synchronous delivery in this execution context. Does not travel with queued jobs. |
 | `Bouncy.hold(address) { ... }` | Hold the address while the block runs, and inside a transaction until it ends, so no Bouncy write to it commits between the app's own check and its send. Returns the block's value. See [a sender that checks and sends](delivery.md#a-sender-that-checks-and-sends-in-one-step). |
+
+## Imports
+
+`Bouncy.import!` carries a block from another system, such as the suppression table an app kept before Bouncy. `Bouncy.block!` stays a support action: it holds the address now, needs a note and calls `after_block`. An import records what another system already knew:
+
+```ruby
+Bouncy.import!("ada@example.com", reason: :complaint, at: Time.utc(2025, 3, 1), note: "Carried from the old table", actor: "carry-task")
+```
+
+- A `:hard_bounce` or `:complaint` becomes the same evidence as a webhook block. It drops mail under the same rule (a fresh sync, or `require_fresh_sync = false`), and a sync clears it under the same [absence rule](amazon-ses.md#failure-and-ordering) as webhook evidence. A `:manual` block becomes a manual hold, which applies whatever the sync state and only a release clears.
+- `at` is the time the other system recorded the block, a `Time` or `DateTime` of any age: `maximum_event_age` applies to webhook feedback only. A time more than five minutes ahead raises `ArgumentError`. It becomes `Status#blocked_at` unless the address was blocked earlier.
+- It writes one `imported` event (source `import`, occurred at `at`) and calls no hook: not `after_event`, `after_block` or `on_notification`. It is not new evidence.
+- The same address, reason and time again writes nothing. So does an import that the address already holds.
+- It never weakens a block in force. A complaint outranks a hard bounce, an earlier hold keeps its time and note, and provider evidence and soft holds stay as they are.
+- A release at or after `at` fences it: the import records an `imported` event with `ignored_for_policy` and changes nothing. A newer block applies.
+
+`Bouncy::Ingestor` and `Bouncy::Observation` are internal: they record webhook feedback. Their 0.2.0 call shape still works in 0.2.x, but carry blocks with `Bouncy.import!`.
 
 ## SES notifications
 
@@ -126,4 +145,4 @@ All gem errors inherit from `Bouncy::Error`:
 | `AuthenticationError` | SNS authorization/signature failure. |
 | `MalformedMessage` | Invalid SNS input. |
 
-Missing support notes, unsupported release destinations and `Bouncy.hold` without a block raise `ArgumentError`. An address lock that waits too long raises `ActiveRecord::LockWaitTimeout`. Rails/database errors not recognized as connection outages are not silently swallowed. A successful local database transaction does not make remote provider operations atomic. Never display a recovery success message from a rescue branch.
+Missing support notes, unsupported release destinations, an import reason or time that is not supported, and `Bouncy.hold` without a block raise `ArgumentError`. An address lock that waits too long raises `ActiveRecord::LockWaitTimeout`. Rails/database errors not recognized as connection outages are not silently swallowed. A successful local database transaction does not make remote provider operations atomic. Never display a recovery success message from a rescue branch.

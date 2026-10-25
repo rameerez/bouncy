@@ -32,7 +32,7 @@ Order.transaction do
 end
 ```
 
-`Bouncy.hold` takes a shared lock for the address. Every Bouncy write to that address (webhook, sync, `block!`, `release!`) takes it exclusively first, before any row lock, until its own transaction ends. A new block therefore commits before the check or after the send. Inside a transaction the hold lasts until that transaction ends, so the outcome commits before the block. Take your own row locks before the hold, as above.
+`Bouncy.hold` takes a shared lock for the address. Every Bouncy write to that address (webhook, sync, `block!`, `import!`, `release!`) takes it exclusively first, before any row lock, until its own transaction ends. A new block therefore commits before the check or after the send. Inside a transaction the hold lasts until that transaction ends, so the outcome commits before the block. Take your own row locks before the hold, as above.
 
 | Database | Lock | Two senders to one address |
 |---|---|---|

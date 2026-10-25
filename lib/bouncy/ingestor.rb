@@ -1,8 +1,15 @@
 # frozen_string_literal: true
 
 module Bouncy
+  # Internal: one webhook observation for Ingestor. See Ingestor.
   Observation = Data.define(:email, :kind, :provider_event_id, :message_id, :occurred_at, :details, :provider_reason, :status_code, :diagnostic)
 
+  # Internal: the receiver's step for one webhook observation. It is not a public API. Use
+  # Bouncy.import! to record a block from another system. The call shape of Ingestor#call and
+  # Observation stays the same in 0.2.x, because apps on 0.2.0 call them to carry blocks.
+  #
+  # config.maximum_event_age applies here only. It keeps a late webhook notification from
+  # blocking. Bouncy.import! and Bouncy.block! do not apply it.
   class Ingestor
     def call(observation)
       email = observation.email && Identity.normalize(observation.email)

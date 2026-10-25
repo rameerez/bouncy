@@ -29,6 +29,9 @@ module Bouncy
     def blocked? = @row ? @row.blocked? : false
     def reasons = @row ? @row.reasons : []
     def reason = (%i[complaint hard_bounce provider_list manual soft_bounces] & reasons).first
+    # The time the block in force began: when the address became blocked here, or the at: time
+    # of the Bouncy.import! that blocked it. nil when the address is not blocked.
+    def blocked_at = blocked? ? @row.blocked_at : nil
     def observed_at = @row&.provider_checked_at || @row&.last_event_at
     def provider_updated_at = @row&.provider_entries&.filter_map { |entry| Time.iso8601(entry.fetch("provider_updated_at")) }&.max
     def last_event = @row && Bouncy.events.for(@row.email).recent.first

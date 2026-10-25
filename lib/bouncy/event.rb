@@ -9,7 +9,8 @@ module Bouncy
     scope :for, ->(email) { where(email: Identity.normalize(email)) }
     scope :recent, -> { order(occurred_at: :desc, id: :desc) }
 
-    after_create_commit :notify_host
+    # An import is not new evidence, so it calls no hook.
+    after_create_commit :notify_host, unless: -> { kind == "imported" }
 
     private
 

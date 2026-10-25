@@ -131,6 +131,7 @@ status.knowledge        # :observed, :no_known_block, :unavailable, :unconfigure
 status.provider_listed?  # Exact provider identifiers are present locally
 status.policy_reason    # Why a listed address's sending policy is unverified
 status.stale?           # Address observation is missing or older than stale_after
+status.blocked_at       # When the block in force began, or nil when not blocked
 
 Bouncy.blocked
 Bouncy.events.for("ada@example.com").recent.limit(20)
@@ -195,6 +196,16 @@ Bouncy.release!(address, note: "Verified recovery", actor: "support:42")
 ```
 
 Default release removes exact provider variants and verifies absence before clearing local state. Errors leave evidence available for review. Releasing an SES restriction can affect sister apps in that account and region; authorize the action in your app. Release does not resend mail or restore consent after a complaint. See [recovery and partial failures](guides/recovery.md).
+
+### Carry blocks from another system
+
+An app that moves its own suppression table to Bouncy carries each block with its reason and the time the old table recorded it:
+
+```ruby
+Bouncy.import!(address, reason: :hard_bounce, at: old_row.suppressed_at, note: "Carried from the old table", actor: "carry-task")
+```
+
+`reason` is `:hard_bounce`, `:complaint` or `:manual`. A bounce or a complaint is the same evidence as a webhook block, and a manual block is a manual hold. `at` can be of any age: the 90-day window for late webhook feedback does not apply. The import calls no hook, writes nothing when it repeats, never weakens a block in force, and changes nothing when the address was released after `at`, so a carry task is safe to run again. See [migrating](guides/migrating.md).
 
 Use any admin UI. Bouncy has **no Madmin dependency, generator or adapter**. The [admin recipe](guides/admin.md) covers host-owned recovery actions, badges and notifications.
 
