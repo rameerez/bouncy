@@ -103,27 +103,39 @@ module Bouncy
     end
 
     # Prepended into every class that includes ActiveRecord::TestFixtures. Rails 7.2, 8.0 and 8.1
-    # begin the fixture transactions in setup_transactional_fixtures and roll them back in
-    # teardown_transactional_fixtures; between the two, each writing connection's open
-    # transaction is the fixtures' own.
+    # enroll a pool into the fixture transactions in two places: setup_transactional_fixtures,
+    # for the pools already connected, and its own "!connection.active_record" subscriber, for a
+    # pool established or replaced later in the test. Both pin the pool's connection, which
+    # begins the fixture transaction, lease that connection and add the pool to
+    # @fixture_connection_pools. Rails 8.1 leaves out the pools a test excludes with
+    # skip_transactional_tests_for_database. Bouncy marks the transactions of exactly the
+    # pools on that list, at setup and from a subscriber that runs after Rails' own, and clears
+    # the marks at teardown.
     module FixtureTransactions
       private
 
       def setup_transactional_fixtures
         super
-        @bouncy_fixture_connections = ActiveRecord::Base.connection_handler.connection_pool_list(:writing).filter_map do |pool|
-          connection = pool.active_connection
-          next unless connection&.transaction_open?
-
-          GUARD.synchronize { FIXTURES[connection] = connection.current_transaction }
-          connection
-        end
+        @bouncy_fixture_connections = []
+        mark_fixture_transactions
+        @bouncy_fixture_subscriber = ActiveSupport::Notifications.subscribe("!connection.active_record") { mark_fixture_transactions }
       end
 
       def teardown_transactional_fixtures
+        ActiveSupport::Notifications.unsubscribe(@bouncy_fixture_subscriber) if @bouncy_fixture_subscriber
         Array(@bouncy_fixture_connections).each { |connection| GUARD.synchronize { FIXTURES.delete(connection) } }
-        @bouncy_fixture_connections = nil
+        @bouncy_fixture_connections = @bouncy_fixture_subscriber = nil
         super
+      end
+
+      def mark_fixture_transactions
+        Array(@fixture_connection_pools).each do |pool|
+          connection = pool.active_connection
+          next if connection.nil? || !connection.transaction_open? || @bouncy_fixture_connections.include?(connection)
+
+          GUARD.synchronize { FIXTURES[connection] = connection.current_transaction }
+          @bouncy_fixture_connections << connection
+        end
       end
     end
 
