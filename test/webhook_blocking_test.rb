@@ -89,6 +89,13 @@ class WebhookBlockingTest < BouncyTest
     end
   end
 
+  test "strict: a bounce type SES does not document is recorded, not blocked" do
+    Bouncy.configuration.webhook_blocking = :strict
+    ingest(bounce("odd@example.com", "TypeFromTheFuture", "Whatever", feedback: "odd"))
+    refute Bouncy.blocked?("odd@example.com")
+    assert_equal "unknown", Bouncy.events.for("odd@example.com").sole.kind
+  end
+
   test "strict: Transient and Undetermined bounces are recorded only" do
     Bouncy.configuration.webhook_blocking = :strict
     [%w[Transient General], %w[Transient MailboxFull], %w[Transient ContentRejected], %w[Undetermined Undetermined]].each_with_index do |(type, subtype), index|

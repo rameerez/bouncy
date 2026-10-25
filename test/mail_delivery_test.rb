@@ -222,6 +222,8 @@ class MailDeliveryTest < BouncyTest
     assert_equal gate.transport.settings, gate.settings
     assert_respond_to gate, :deliver!
     assert_raises(NoMethodError) { gate.no_such_method }
+    gate.settings = gate.transport.settings.merge(probe: true)
+    assert gate.transport.settings[:probe], "a transport method reaches the transport"
     DeliveryMailer.notice(to: "ana@example.com").message.tap { |message| 2.times { message.deliver } }
     assert_equal 3, ActionMailer::Base.deliveries.size, "a second delivery of one message wraps nothing twice"
   end

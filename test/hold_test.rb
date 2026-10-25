@@ -318,6 +318,24 @@ class SqliteHoldTest < BouncyTest
     end
   end
 
+  test "transaction reports other than an outermost end keep the deferred releases" do
+    with_file_database do |path|
+      connection = ActiveRecord::Base.connection
+      Bouncy::AddressLock::DEFERRED[connection] = [Bouncy::AddressLock.take(connection, "ada@example.com", exclusive: true)]
+      Bouncy::AddressLock.transaction_ended(connection: connection, outcome: :restart)
+      Bouncy::AddressLock.transaction_ended(connection: nil, outcome: :commit)
+      refute lockable?(path, File::LOCK_SH), "a restarted savepoint continues"
+      Bouncy::AddressLock.transaction_ended(connection: connection, outcome: :incomplete)
+      assert lockable?(path, File::LOCK_EX), "an incomplete transaction is over"
+      assert_nil Bouncy::AddressLock.until_transaction_end(connection, nil), "nothing to release when the database releases it"
+    end
+  end
+
+  test "a hook with no connection, or no hold on it, runs at once" do
+    assert_equal :ran, Thread.new { Bouncy::AddressLock.after_locks { :ran } }.value
+    refute Bouncy::AddressLock.holding?(nil)
+  end
+
   test "a memory database uses a lock file of its own process" do
     connection = ActiveRecord::Base.connection
     connection.pool.db_config.stub(:database, ":memory:") do
@@ -628,6 +646,19 @@ if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
     end
 
     if ActiveRecord::Base.connection.adapter_name.match?(/Mysql|Trilogy/)
+      test "a named lock that waits longer than innodb_lock_wait_timeout raises LockWaitTimeout" do
+        holding = Queue.new
+        done = Queue.new
+        in_thread { Bouncy.hold("ana@example.com") { holding << true and done.pop } }
+        holding.pop
+        connection = ActiveRecord::Base.connection
+        connection.execute("SET SESSION innodb_lock_wait_timeout = 1")
+        assert_raises(ActiveRecord::LockWaitTimeout) { Bouncy.hold("ana@example.com") { flunk "the block must not run" } }
+      ensure
+        connection&.execute("SET SESSION innodb_lock_wait_timeout = DEFAULT")
+        done << true
+      end
+
       test "a named lock is released once, whichever transaction callback calls it" do
         connection = ActiveRecord::Base.connection
         2.times { Bouncy::AddressLock.take(connection, "ana@example.com", exclusive: false) } # one session takes it twice
