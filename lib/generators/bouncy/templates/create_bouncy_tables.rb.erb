@@ -87,11 +87,19 @@ class CreateBouncyTables < ActiveRecord::Migration<%= migration_version %>
     mysql? ? { collation: "utf8mb4_bin" } : {}
   end
 
+  # A subclass of a Rails adapter keeps the family of its parent class: the PostGIS adapter
+  # reports "PostGIS". The name is the fallback for an adapter that only renames itself. The
+  # migration repeats these rules so that it does not depend on Bouncy's internal code.
   def postgresql?
-    connection.adapter_name.downcase.include?("postgres")
+    adapter_subclass?("PostgreSQLAdapter") || connection.adapter_name.match?(/postg/i)
   end
 
   def mysql?
-    connection.adapter_name.downcase.match?(/mysql|trilogy/)
+    adapter_subclass?("AbstractMysqlAdapter") || connection.adapter_name.match?(/mysql|trilogy/i)
+  end
+
+  def adapter_subclass?(adapter)
+    ActiveRecord::ConnectionAdapters.const_defined?(adapter, false) &&
+      connection.is_a?(ActiveRecord::ConnectionAdapters.const_get(adapter, false))
   end
 end

@@ -173,7 +173,7 @@ module Bouncy
     # committed state: a REPEATABLE READ snapshot from before the hold cannot hide a newer block
     # or release. PostgreSQL at READ COMMITTED reads the latest state with every statement.
     def current_state(relation)
-      return relation unless AddressLock.holding? && Record.connection_pool.with_connection(&:adapter_name).match?(/Mysql|Trilogy/i)
+      return relation unless AddressLock.holding? && Record.connection_pool.with_connection { |connection| Database.family(connection) } == :mysql
 
       relation.lock("LOCK IN SHARE MODE")
     end
@@ -201,6 +201,7 @@ end
 
 require_relative "bouncy/configuration"
 require_relative "bouncy/identity"
+require_relative "bouncy/database"
 require_relative "bouncy/record"
 require_relative "bouncy/suppression"
 require_relative "bouncy/event"

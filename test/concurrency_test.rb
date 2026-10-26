@@ -4,7 +4,7 @@ require "test_helper"
 require "timeout"
 require "open3"
 
-if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
+if %i[postgresql mysql].include?(Bouncy::Database.family(ActiveRecord::Base.connection))
   class ConcurrencyTest < BouncyTest
     test "simultaneous webhook retries commit one event and one state transition" do
       ready = Queue.new
@@ -69,7 +69,7 @@ if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
     private
 
     def lock_probe(connection)
-      if connection.adapter_name == "PostgreSQL"
+      if Bouncy::Database.family(connection) == :postgresql
         key = Digest::SHA256.hexdigest(Bouncy.scope)[0, 15].to_i(16)
         "SELECT pg_try_advisory_lock(#{key})"
       else

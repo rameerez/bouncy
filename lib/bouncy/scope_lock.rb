@@ -11,8 +11,8 @@ module Bouncy
     def synchronize
       Record.connection_pool.with_connection do |connection|
         key = Digest::SHA256.hexdigest(Bouncy.scope)[0, 15].to_i(16)
-        case connection.adapter_name
-        when "PostgreSQL"
+        case Database.family!(connection)
+        when :postgresql
           # Uncached: a cached answer would report the lock without taking it.
           acquired = connection.uncached { connection.select_value("SELECT pg_try_advisory_lock(#{key})") }
           raise ProviderError, "Another sync holds this scope lock" unless [true, "t"].include?(acquired)
@@ -22,7 +22,7 @@ module Bouncy
           ensure
             connection.execute("SELECT pg_advisory_unlock(#{key})")
           end
-        when /Mysql|Trilogy/i
+        when :mysql
           name = Digest::SHA256.hexdigest("bouncy:#{connection.pool.db_config.database}:#{Bouncy.scope}")
           acquired = connection.uncached { connection.select_value("SELECT GET_LOCK('#{name}', 0)") }
           raise ProviderError, "Another sync holds this scope lock" unless acquired == 1
@@ -32,7 +32,7 @@ module Bouncy
           ensure
             connection.execute("SELECT RELEASE_LOCK('#{name}')")
           end
-        when "SQLite"
+        when :sqlite
           database = connection.pool.db_config.database
           path = database == ":memory:" ? File.join(Dir.tmpdir, "bouncy-#{Process.pid}-#{key}.lock") : "#{File.expand_path(database)}.bouncy-#{key}.lock"
           File.open(path, File::RDWR | File::CREAT, 0o600) do |file|
@@ -44,8 +44,6 @@ module Bouncy
               file.flock(File::LOCK_UN)
             end
           end
-        else
-          raise ConfigurationError, "Bouncy supports PostgreSQL, MySQL and SQLite"
         end
       end
     end

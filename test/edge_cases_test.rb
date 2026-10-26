@@ -97,8 +97,7 @@ class EdgeCasesTest < BouncyTest
   end
 
   test "local file SQLite locks and unsupported adapters have explicit behavior" do
-    connection = ActiveRecord::Base.connection
-    connection.stub(:adapter_name, "Unsupported") do
+    Bouncy::Database.stub(:family, nil) do
       assert_raises(Bouncy::ConfigurationError) { Bouncy.sync! }
     end
   end
@@ -125,7 +124,7 @@ class ScopeLockTest < BouncyTest
     connection = ActiveRecord::Base.connection
     Dir.mktmpdir("bouncy-lock") do |dir|
       connection.pool.db_config.stub(:database, File.join(dir, "app.sqlite3")) do
-        connection.stub(:adapter_name, "SQLite") do
+        Bouncy::Database.stub(:family, :sqlite) do
           Bouncy::ScopeLock.synchronize { assert_equal 1, Dir["#{dir}/app.sqlite3.bouncy-*.lock"].size }
           File.open(Dir["#{dir}/app.sqlite3.bouncy-*.lock"].sole, File::RDWR) do |file|
             assert file.flock(File::LOCK_EX | File::LOCK_NB)
@@ -134,7 +133,7 @@ class ScopeLockTest < BouncyTest
         end
       end
       connection.pool.db_config.stub(:database, ":memory:") do
-        connection.stub(:adapter_name, "SQLite") { Bouncy::ScopeLock.synchronize { assert true } }
+        Bouncy::Database.stub(:family, :sqlite) { Bouncy::ScopeLock.synchronize { assert true } }
       end
     end
   end
