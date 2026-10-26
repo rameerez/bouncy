@@ -87,11 +87,25 @@ class CreateBouncyTables < ActiveRecord::Migration<%= migration_version %>
     mysql? ? { collation: "utf8mb4_bin" } : {}
   end
 
-  def postgresql?
-    connection.adapter_name.downcase.include?("postgres")
+  def postgresql? = adapter_family == :postgresql
+  def mysql? = adapter_family == :mysql
+
+  # Mirrors Bouncy::Database.family. It is inlined because the migration must not depend on
+  # Bouncy's code when it runs. Every adapter class comes before any name: a subclass of a Rails
+  # adapter keeps the family of its parent class whatever it reports, as the PostGIS adapter
+  # reports "PostGIS". The name is the fallback for an adapter that only renames itself.
+  def adapter_family
+    families = {
+      postgresql: ["PostgreSQLAdapter", /postg/i],
+      mysql: ["AbstractMysqlAdapter", /mysql|trilogy/i],
+      sqlite: ["SQLite3Adapter", /sqlite/i]
+    }
+    families.find { |_, (adapter, _)| adapter_subclass?(adapter) }&.first ||
+      families.find { |_, (_, name)| connection.adapter_name.match?(name) }&.first
   end
 
-  def mysql?
-    connection.adapter_name.downcase.match?(/mysql|trilogy/)
+  def adapter_subclass?(adapter)
+    ActiveRecord::ConnectionAdapters.const_defined?(adapter, false) &&
+      connection.is_a?(ActiveRecord::ConnectionAdapters.const_get(adapter, false))
   end
 end

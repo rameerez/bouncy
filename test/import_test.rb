@@ -226,13 +226,13 @@ class ImportIsolationTest < BouncyTest
   def address_locked?(email)
     Thread.new do
       Bouncy::Record.connection_pool.with_connection do |connection|
-        case connection.adapter_name
-        when "PostgreSQL"
+        case Bouncy::Database.family(connection)
+        when :postgresql
           key = Bouncy::AddressLock.advisory_key(email)
           free = connection.select_value("SELECT pg_try_advisory_lock_shared(#{key})")
           connection.select_value("SELECT pg_advisory_unlock_shared(#{key})") if free
           !free
-        when /Mysql|Trilogy/i
+        when :mysql
           name = Digest::SHA256.hexdigest("bouncy:address:#{connection.pool.db_config.database}:#{Bouncy.scope}:#{email}")
           connection.uncached { connection.select_value("SELECT IS_FREE_LOCK(#{connection.quote(name)})") }.to_i.zero?
         else
@@ -245,7 +245,7 @@ class ImportIsolationTest < BouncyTest
   # PostgreSQL and MySQL already give each thread its own connection. In-memory SQLite exists on
   # one connection only, so the models get a file database of their own.
   def with_independent_connections
-    return yield unless ActiveRecord::Base.connection.adapter_name == "SQLite"
+    return yield unless Bouncy::Database.family(ActiveRecord::Base.connection) == :sqlite
 
     Dir.mktmpdir("bouncy-import") do |directory|
       Bouncy::Record.establish_connection(adapter: "sqlite3", database: File.join(directory, "bouncy.sqlite3"), pool: 5, timeout: 10_000)

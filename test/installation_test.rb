@@ -35,7 +35,7 @@ class InstallationTest < BouncyTest
       CreateBouncyUuidTables.migrate(:up)
       connection = ActiveRecord::Base.connection
       type = connection.columns(:bouncy_uuid_suppressions).find { |column| column.name == "id" }.type
-      assert_equal(connection.adapter_name == "PostgreSQL" ? :uuid : :string, type)
+      assert_equal(Bouncy::Database.family(connection) == :postgresql ? :uuid : :string, type)
       model = Class.new(Bouncy::Suppression) { self.table_name = "bouncy_uuid_suppressions" }
       row = model.create!(scope: Bouncy.scope, email: "uuid@example.com", provider: "ses")
       assert_match(/\A[0-9a-f-]{36}\z/, row.id)
@@ -51,7 +51,7 @@ class InstallationTest < BouncyTest
   test "migration selects native JSON storage and independent application defaults" do
     connection = ActiveRecord::Base.connection
     columns = connection.columns(:bouncy_suppressions).index_by(&:name)
-    assert_equal(connection.adapter_name == "PostgreSQL" ? :jsonb : :json, columns.fetch("details").type)
+    assert_equal(Bouncy::Database.family(connection) == :postgresql ? :jsonb : :json, columns.fetch("details").type)
     assert_equal false, columns.fetch("details").null
     a = Bouncy::Suppression.new
     b = Bouncy::Suppression.new

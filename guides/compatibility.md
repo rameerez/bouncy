@@ -6,6 +6,12 @@ The v0.1.0 release run on September 9, 2026 passed all 54 combinations using Rub
 
 The v0.2.0 local run on October 25, 2026 passed all 54 combinations with the same Ruby, Rails, PostgreSQL and MySQL versions and SQLite 3.54.1, and the same 18 again with Rails 8.0.2, the oldest 8.0 release the transactional-fixture support was checked on: 201 tests on SQLite (one skipped there: a second pool cannot share an in-memory database), 220 on PostgreSQL and 219 on MySQL with Rails 8.1, one fewer with Rails 7.2 and 8.0, and at least 96.5% line and 91.5% branch coverage. It adds the address-lock tests with real connections on PostgreSQL and MySQL. No live SES run was part of it.
 
+The v0.2.2 local run on October 26, 2026 used Ruby 3.3.5 and Rails 8.1 only: 236 tests on SQLite (one skipped, as before), 256 on PostgreSQL and 255 on MySQL, all passing. It adds tests for adapters that subclass a Rails adapter under another name, with the suite's own connection renamed `"PostGIS"` on PostgreSQL. No live SES run and no run on the PostGIS adapter itself was part of it.
+
+## Database adapters
+
+Bouncy knows a database by its Active Record adapter class. An adapter that subclasses `PostgreSQLAdapter`, `AbstractMysqlAdapter` or `SQLite3Adapter` belongs to that database whatever `adapter_name` it reports. The PostGIS adapter (`activerecord-postgis-adapter`) reports `"PostGIS"` and gets everything PostgreSQL gets: advisory locks, the isolation check, JSONB and native UUIDs. An adapter that is no such subclass is known by its name: one that contains `postg`, `mysql`, `trilogy` or `sqlite`. Any other adapter raises `Bouncy::ConfigurationError` at its first lock. The suite runs MySQL through `mysql2` only; the Trilogy adapter shares `AbstractMysqlAdapter` with it and is recognised by its class and its name, but no suite run uses it.
+
 The runtime JSON gem is constrained below version 3 because the supported Rails releases still pass a positional options hash to `JSON.parse`. Optional AWS SDKs load lazily and are host dependencies. There is no database or AWS lookup during boot.
 
 ## Migrations
@@ -25,11 +31,11 @@ Without a setting, Rails chooses its standard primary key. Explicit bigint/integ
 
 | Database | JSON storage | JSON defaults | UUID storage |
 |---|---|---|---|
-| PostgreSQL | JSONB | Database and model defaults | Native UUID |
+| PostgreSQL, PostGIS included | JSONB | Database and model defaults | Native UUID |
 | MySQL 8.4 | JSON | Model defaults; no literal SQL JSON default | 36-character string |
 | SQLite | JSON | Database and model defaults | 36-character string |
 
-The gem's JSON attributes inherit the database's native type. Every new record gets an independent hash/array default. No adapter probe or attribute-schema query is performed at boot. Unsupported database adapters raise before reconciliation.
+The gem's JSON attributes inherit the database's native type. Every new record gets an independent hash/array default. No adapter probe or attribute-schema query is performed at boot. Unsupported database adapters raise before reconciliation. Before 0.2.2 the migration made JSON columns and 36-character string keys on PostGIS; those tables keep working.
 
 MySQL identity columns explicitly use `utf8mb4_bin`. Case/accent-insensitive equality must not collapse addresses beyond Bouncy's trimmed lowercase policy. Scope and address limits keep compound indexes within supported database key limits. Use an application-normalized host column for model scopes.
 

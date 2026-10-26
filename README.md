@@ -41,7 +41,7 @@ Check out my other 💎 Ruby gems: [`nondisposable`](https://github.com/rameerez
 ## Requirements
 
 - Ruby **3.3+** and Rails **7.2.3.2+**, below Rails 9. Tested on Ruby 3.3/3.4/4.0 and Rails 7.2/8.0/8.1.
-- **PostgreSQL, MySQL or SQLite**, with bigint or UUID primary keys.
+- **PostgreSQL** (including the PostGIS adapter), **MySQL** or **SQLite**, with bigint or UUID primary keys.
 - **Amazon SES**, one account and region. SES SMTP is supported; suppression management needs AWS API credentials.
 
 Start in observation mode and verify your sending setup before enabling dropping. See [compatibility and validation](guides/compatibility.md) for the tested matrix and remaining validation limits.

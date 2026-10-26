@@ -170,7 +170,7 @@ module Bouncy
     # stays invisible. Hold the address outside the transaction instead; the lock then lasts for
     # the whole block, and the transaction's snapshot starts after it.
     def require_read_committed(connection)
-      return unless connection.adapter_name == "PostgreSQL" && connection.transaction_open?
+      return unless Database.family(connection) == :postgresql && connection.transaction_open?
 
       isolation = connection.uncached { connection.select_value("SHOW transaction_isolation") }
       return if ["read committed", "read uncommitted"].include?(isolation)
@@ -181,11 +181,10 @@ module Bouncy
 
     # Takes the lock now and returns what releases it, or nil when the database releases it.
     def take(connection, key, exclusive:)
-      case connection.adapter_name
-      when "PostgreSQL" then take_advisory(connection, key, exclusive)
-      when /Mysql|Trilogy/i then take_named(connection, key)
-      when "SQLite" then take_file(connection, exclusive ? File::LOCK_EX : File::LOCK_SH)
-      else raise ConfigurationError, "Bouncy supports PostgreSQL, MySQL and SQLite"
+      case Database.family!(connection)
+      when :postgresql then take_advisory(connection, key, exclusive)
+      when :mysql then take_named(connection, key)
+      when :sqlite then take_file(connection, exclusive ? File::LOCK_EX : File::LOCK_SH)
       end
     end
 

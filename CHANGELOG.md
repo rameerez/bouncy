@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-26
+
+One fix that an app on the fleet found with the PostGIS adapter. There is no new migration.
+
+### Fixed
+
+- Bouncy knows a database by its Active Record adapter class, so an adapter that subclasses a Rails adapter gets the locks of that database whatever name it reports, because the PostGIS adapter (`activerecord-postgis-adapter`) is a `PostgreSQLAdapter` whose `adapter_name` is `"PostGIS"`, and Bouncy matched the name `"PostgreSQL"` exactly: it raised "Bouncy supports PostgreSQL, MySQL and SQLite", the receiver answered 503 to every signed SNS message, and `Bouncy.hold`, `Bouncy.sync!` and every other write raised. The name is still the fallback for an adapter that only renames itself. One helper, `Bouncy::Database`, now makes this choice for every lock and read.
+- The install migration gives a PostGIS database JSONB columns and native UUID keys, as it gives PostgreSQL, because it looked for `"postgres"` in the adapter name and made JSON columns and 36-character string keys there. Tables made that way keep working and need no change.
+
 ## [0.2.1] - 2026-10-25
 
 Three gaps that the first app to move its own suppression table to Bouncy found. There is no new migration.

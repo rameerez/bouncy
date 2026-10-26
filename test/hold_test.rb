@@ -138,7 +138,7 @@ class SqliteHoldTest < BouncyTest
     Dir.mktmpdir("bouncy-hold") do |directory|
       path = File.join(directory, "app.sqlite3")
       connection.pool.db_config.stub(:database, path) do
-        connection.stub(:adapter_name, "SQLite") { yield "#{path}.bouncy-addresses.lock" }
+        Bouncy::Database.stub(:family, :sqlite) { yield "#{path}.bouncy-addresses.lock" }
       end
     end
   end
@@ -257,9 +257,7 @@ class SqliteHoldTest < BouncyTest
     with_file_database do |path|
       thread = Thread.new do
         ActiveRecord::Base.connection_pool.with_connection do |connection|
-          connection.stub(:adapter_name, "SQLite") do
-            Bouncy::AddressLock::DEFERRED[connection] = [Bouncy::AddressLock.take(connection, "ada@example.com", exclusive: true)]
-          end
+          Bouncy::AddressLock::DEFERRED[connection] = [Bouncy::AddressLock.take(connection, "ada@example.com", exclusive: true)]
           refute lockable?(path, File::LOCK_SH)
         end
       end
@@ -339,21 +337,20 @@ class SqliteHoldTest < BouncyTest
   test "a memory database uses a lock file of its own process" do
     connection = ActiveRecord::Base.connection
     connection.pool.db_config.stub(:database, ":memory:") do
-      connection.stub(:adapter_name, "SQLite") do
+      Bouncy::Database.stub(:family, :sqlite) do
         Bouncy.hold("ada@example.com") { assert File.exist?(File.join(Dir.tmpdir, "bouncy-#{Process.pid}-addresses.lock")) }
       end
     end
   end
 
   test "an unsupported database is refused" do
-    connection = ActiveRecord::Base.connection
-    connection.stub(:adapter_name, "Unsupported") do
+    Bouncy::Database.stub(:family, nil) do
       assert_raises(Bouncy::ConfigurationError) { Bouncy.hold("ada@example.com") { flunk "the block must not run" } }
     end
   end
 end
 
-if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
+if %i[postgresql mysql].include?(Bouncy::Database.family(ActiveRecord::Base.connection))
   # The lock commits for real across connections, so these tests use threads with their own
   # connections. Each read skips the query cache.
   class HoldConcurrencyTest < BouncyTest
@@ -590,7 +587,7 @@ if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
       assert_equal [true], seen
     end
 
-    if ActiveRecord::Base.connection.adapter_name == "PostgreSQL"
+    if Bouncy::Database.family(ActiveRecord::Base.connection) == :postgresql
       test "inside a REPEATABLE READ or SERIALIZABLE transaction a hold raises at once, even while a write holds the address" do
         writing = Queue.new
         commit = Queue.new
@@ -645,7 +642,7 @@ if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
       end
     end
 
-    if ActiveRecord::Base.connection.adapter_name.match?(/Mysql|Trilogy/)
+    if Bouncy::Database.family(ActiveRecord::Base.connection) == :mysql
       test "a named lock that waits longer than innodb_lock_wait_timeout raises LockWaitTimeout" do
         holding = Queue.new
         done = Queue.new
@@ -672,7 +669,7 @@ if ActiveRecord::Base.connection.adapter_name.match?(/PostgreSQL|Mysql|Trilogy/)
       end
     end
 
-    if ActiveRecord::Base.connection.adapter_name == "PostgreSQL"
+    if Bouncy::Database.family(ActiveRecord::Base.connection) == :postgresql
       test "on PostgreSQL senders to one address do not wait for each other" do
         holding = Queue.new
         done = Queue.new
