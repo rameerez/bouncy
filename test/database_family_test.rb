@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "support/signed_sns"
+require "open3"
 require "active_record/connection_adapters/postgresql_adapter"
 require "active_record/connection_adapters/abstract_mysql_adapter"
 require "active_record/connection_adapters/sqlite3_adapter"
@@ -129,6 +130,59 @@ class DatabaseFamilyTest < BouncyTest
       assert_equal({ id: :string, limit: 36 }, migration.send(:primary_key_options, :uuid))
       assert_equal({}, migration.send(:identity_column_options))
     end
+  end
+
+  # What the migration makes for each family: the JSON type, the UUID key and the identity columns.
+  MIGRATION = {
+    postgresql: [:jsonb, { id: :uuid }, {}],
+    mysql: [:json, { id: :string, limit: 36 }, { collation: "utf8mb4_bin" }],
+    sqlite: [:json, { id: :string, limit: 36 }, {}]
+  }.freeze
+
+  test "the class decides over a name of another family, in the migration as at runtime" do
+    migration = CreateBouncyTables.new
+    { postgresql: ActiveRecord::ConnectionAdapters::PostgreSQLAdapter, mysql: ActiveRecord::ConnectionAdapters::AbstractMysqlAdapter,
+      sqlite: ActiveRecord::ConnectionAdapters::SQLite3Adapter }.each do |family, base|
+      %w[PostgreSQL postgres PostGIS Mysql2 mysql Trilogy SQLite].each do |name|
+        connection = Class.new(base) { define_method(:adapter_name) { name } }.allocate
+        assert_equal family, Bouncy::Database.family(connection), "#{base.name} named #{name}"
+        migration.stub(:connection, connection) do
+          made = [migration.send(:json_column_type), migration.send(:primary_key_options, :uuid), migration.send(:identity_column_options)]
+          assert_equal MIGRATION.fetch(family), made, "#{base.name} named #{name}"
+          assert_equal family, migration.send(:adapter_family), "#{base.name} named #{name}"
+        end
+      end
+    end
+  end
+
+  test "the migration and the runtime agree on an adapter known by its name alone" do
+    migration = CreateBouncyTables.new
+    %w[PostGIS PostgreSQL Mysql2 Trilogy SQLite Unsupported].each do |name|
+      connection = NamedOnly.new(name)
+      migration.stub(:connection, connection) { assert_equal [Bouncy::Database.family(connection)], [migration.send(:adapter_family)], name }
+    end
+  end
+
+  # This process loads every adapter above, so a fresh one shows the case of an app that never
+  # loads the PostgreSQL or MySQL adapter or its driver.
+  test "with no PostgreSQL or MySQL adapter loaded, the family works and loads no driver" do
+    script = <<~RUBY
+      require "bouncy"
+      adapters = ActiveRecord::ConnectionAdapters
+      named = Struct.new(:adapter_name)
+      absent = %w[PostgreSQLAdapter AbstractMysqlAdapter SQLite3Adapter].none? { |name| adapters.const_defined?(name, false) }
+      by_name = %w[PostGIS Mysql2 Trilogy SQLite Unsupported].map { |name| Bouncy::Database.family(named.new(name)) }
+      ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
+      by_class = Bouncy::Database.family(ActiveRecord::Base.connection)
+      loaded = %w[PostgreSQLAdapter AbstractMysqlAdapter].select { |name| adapters.const_defined?(name, false) } +
+               %w[PG Mysql2 Trilogy].select { |name| Object.const_defined?(name) }
+      puts JSON.generate(absent: absent, by_name: by_name, by_class: by_class, loaded: loaded)
+    RUBY
+    output, status = Open3.capture2e({ "BUNDLE_GEMFILE" => Bundler.default_gemfile.to_s }, RbConfig.ruby, "-rbundler/setup",
+                                     "-I", File.expand_path("../lib", __dir__), "-e", script)
+    assert status.success?, output
+    assert_equal({ "absent" => true, "by_name" => ["postgresql", "mysql", "mysql", "sqlite", nil], "by_class" => "sqlite", "loaded" => [] },
+                 JSON.parse(output.lines.last))
   end
 end
 
