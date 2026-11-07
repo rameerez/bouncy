@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+Hardening from the review of the first app that moved its own suppression table to Bouncy (#10). There is no new migration.
+
+### Fixed
+
+- A sync reads the SES suppression list one page at a time and applies each page before it requests the next, and a provider release keeps only the entries of the address it releases, because both held the whole list in memory (with a second grouped copy in the sync), which could exhaust a small host's memory. The sync's table of starting lock versions and of listed addresses is keyed by a hash of the address, not the address.
+- One provider scan stops at `config.sync_max_pages` (1,000), `config.sync_max_entries` (1,000,000) or `config.sync_max_duration` (15 minutes), because nothing bounded the time a sync could hold a worker. A scan stopped at a limit is recorded with `complete: false`, `enumerated: false` and `incomplete_reason`, logs a warning, still adds the restrictions it read, clears none for being absent, and makes a provider release refuse to run.
+- The SNS signing-certificate download is bounded against unauthenticated messages: a failed download is remembered for 10 seconds and the same URL fails at once; at most two downloads run at a time per process; and URLs that never verified a signature share a budget of 10 downloads a minute, because a message naming an allowed topic, with a forged signature and a new certificate file name each time, caused one HTTPS download per request and a failed download was not remembered. A request refused by a limit answers 503, so SNS retries a genuine message. A certificate that fails to parse is now refused for those 10 seconds, not refetched at once.
+- Each signed `SubscriptionConfirmation` and `UnsubscribeConfirmation` acts once, keyed by its `MessageId`, and one older than three days (a subscription token's lifetime, or `config.retention` if shorter) or dated more than five minutes ahead is refused with 400, because a signed confirmation replayed even a year later confirmed again (an `sns:ConfirmSubscription` call or a `SubscribeURL` visit) every time. A retry after a failed confirmation still confirms.
+
+### Changed
+
+- With `config.require_fresh_sync = true` (the default), a later sync that failed or stopped at a limit no longer ends the freshness of the last complete one, because one throttled hourly run stopped dropping mail to every known hard bounce and complaint, webhook ones included, until the next success. A later sync that found the sending policy unverified still ends it at once, and the last complete sync still expires after `config.stale_after`. `Bouncy.sync_fresh?(event)` still checks that one summary. The README and guides now say prominently that repeated failures past `stale_after` stop enforcement, and how `require_fresh_sync = false` with a running sync avoids that.
+- An adapter may implement `scan(limits) { |page| }` to stream its list; one that only implements `snapshot` keeps working, read as one page.
+
 ## [0.2.2] - 2026-10-26
 
 One fix that an app on the fleet found with the PostGIS adapter. There is no new migration.

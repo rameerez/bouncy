@@ -10,29 +10,80 @@ module Bouncy
       # Signing certificates, shared by every receiver in the process: each request builds a new
       # adapter, and an app that subscribes to Send and Delivery events gets one SNS message per
       # mail. At most 16 certificate URLs, each kept for an hour. Only a certificate that the
-      # allowlisted, bounded download returned is kept; a failed download keeps nothing.
+      # allowlisted, bounded download returned is kept.
+      #
+      # The URL comes from a message whose signature has not been checked yet, so the downloads
+      # it can cause are bounded too:
+      # - a failed download (transport, HTTP status, size, or a body that is not an RSA
+      #   certificate) is remembered for failure_ttl seconds, and the same URL fails at once
+      #   with the same error. That is shorter than the 20 seconds SNS waits between retries.
+      # - at most `concurrency` downloads run at a time in the process;
+      # - URLs that have never verified a signature share a budget of `budget` downloads per
+      #   `window` seconds, so messages that rotate the certificate file name cannot turn into a
+      #   stream of downloads. A URL that verified a signature (the last 16) is outside the budget.
+      # A request refused by a limit gets ProviderError, so the receiver answers 503 and SNS
+      # retries a genuine message later.
       class CertificateCache
         Entry = Data.define(:pem, :fetched_at)
+        Failure = Data.define(:error, :message, :failed_at)
+        REMEMBERED = [ProviderError, AuthenticationError, Aws::SNS::MessageVerifier::VerificationError].freeze
 
-        def initialize(size:, ttl:)
+        def initialize(size:, ttl:, failure_ttl: 10, failures: 64, budget: 10, window: 60, concurrency: 2)
           @size = size
           @ttl = ttl
+          @failure_ttl = failure_ttl
+          @failure_size = failures
+          @budget = budget
+          @window = window
+          @concurrency = concurrency
           @entries = {}
+          @failures = {}
+          @trusted = {}
+          @downloads = []
+          @in_flight = 0
           @mutex = Mutex.new
         end
 
         # The download runs outside the lock, so one slow fetch does not stop other requests.
         def fetch(url)
-          entry = @mutex.synchronize { @entries[url] }
-          return entry.pem if entry && Time.now - entry.fetched_at < @ttl
+          entry = @mutex.synchronize do
+            cached = @entries[url]
+            next cached if cached && Time.now - cached.fetched_at < @ttl
 
-          pem = yield
+            reserve!(url)
+            nil
+          end
+          return entry.pem if entry
+
+          begin
+            pem = yield
+          rescue *REMEMBERED => e
+            @mutex.synchronize do
+              @failures.delete(url)
+              @failures[url] = Failure.new(error: e.class, message: e.message, failed_at: Time.now)
+              @failures.shift while @failures.size > @failure_size
+            end
+            raise
+          ensure
+            @mutex.synchronize { @in_flight -= 1 }
+          end
           @mutex.synchronize do
+            @failures.delete(url)
             @entries.delete(url)
             @entries[url] = Entry.new(pem: pem, fetched_at: Time.now)
             @entries.shift while @entries.size > @size
           end
           pem
+        end
+
+        # Marks a URL whose certificate verified a signature, so it is fetched again outside the
+        # budget once it expires or rotates.
+        def trust(url)
+          @mutex.synchronize do
+            @trusted.delete(url)
+            @trusted[url] = true
+            @trusted.shift while @trusted.size > @size
+          end
         end
 
         # Drops a certificate that failed a verification, so the next one fetches it again. A
@@ -49,7 +100,30 @@ module Bouncy
         end
 
         def size = @mutex.synchronize { @entries.size }
-        def clear = @mutex.synchronize { @entries.clear }
+
+        def clear
+          @mutex.synchronize do
+            [@entries, @failures, @trusted, @downloads].each(&:clear)
+          end
+        end
+
+        private
+
+        # Called under the lock: raises the remembered failure, or a ProviderError when a limit
+        # is reached, and otherwise counts the download as started.
+        def reserve!(url)
+          failure = @failures[url]
+          raise failure.error, failure.message if failure && Time.now - failure.failed_at < @failure_ttl
+          raise ProviderError, "Too many SNS certificate downloads in progress" if @in_flight >= @concurrency
+
+          unless @trusted.key?(url)
+            @downloads.shift while @downloads.any? && Time.now - @downloads.first >= @window
+            raise ProviderError, "SNS certificate download budget exhausted" if @downloads.size >= @budget
+
+            @downloads << Time.now
+          end
+          @in_flight += 1
+        end
       end
 
       CERTIFICATES = CertificateCache.new(size: 16, ttl: 3600)
@@ -136,11 +210,14 @@ module Bouncy
       # A certificate that SNS rotated at the same URL fails once from the cache; it is fetched
       # again, once, and the message is checked with the new one.
       def verify(raw_body, url)
-        @mutex.synchronize { @verifier.authenticate!(raw_body) }
-      rescue Aws::SNS::MessageVerifier::VerificationError, OpenSSL::OpenSSLError
-        raise unless @verifier.is_a?(BoundedVerifier) && CERTIFICATES.forget(url, after: REFETCH_AFTER)
+        begin
+          @mutex.synchronize { @verifier.authenticate!(raw_body) }
+        rescue Aws::SNS::MessageVerifier::VerificationError, OpenSSL::OpenSSLError
+          raise unless @verifier.is_a?(BoundedVerifier) && CERTIFICATES.forget(url, after: REFETCH_AFTER)
 
-        @mutex.synchronize { @verifier.authenticate!(raw_body) }
+          @mutex.synchronize { @verifier.authenticate!(raw_body) }
+        end
+        CERTIFICATES.trust(url) if @verifier.is_a?(BoundedVerifier)
       end
 
       def authorize!(envelope)

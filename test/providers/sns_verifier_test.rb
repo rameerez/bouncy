@@ -19,6 +19,8 @@ class SnsVerifierTest < BouncyTest
     downloads = []
     url = ->(index) { "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-#{index}.pem" }
     download = lambda do |verifier, index|
+      # URLs that verified a signature, so the download budget for unknown URLs stays out of this test.
+      cache.trust(url.call(index))
       verifier.stub(:download_pem, ->(uri) { downloads << uri.to_s and SignedSns::CERT.to_pem }) { verifier.send(:pem, URI(url.call(index))) }
     end
 

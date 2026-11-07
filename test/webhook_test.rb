@@ -204,7 +204,7 @@ class WebhookTest < BouncyTest
     assert_requested :get, CERT_URL, times: 2
   end
 
-  test "a certificate that does not parse or has no RSA key is refused and never cached, so a valid one is fetched at once" do
+  test "a certificate that does not parse or has no RSA key is refused and never cached, and a valid one is fetched after the failure pause" do
     ec_key = OpenSSL::PKey::EC.generate("prime256v1")
     ec_certificate = OpenSSL::X509::Certificate.new.tap do |cert|
       cert.version = 2
@@ -220,9 +220,13 @@ class WebhookTest < BouncyTest
 
     assert_equal 401, post(signed_envelope("MessageId" => "m-1")), "PEM framing without a certificate"
     assert_equal 0, Bouncy::Providers::SnsVerifier::CERTIFICATES.size
+    assert_equal 401, post(signed_envelope("MessageId" => "m-2")), "the failure is remembered for a few seconds"
+    assert_requested :get, CERT_URL, times: 1
+    travel 11.seconds
     assert_equal 401, post(signed_envelope("MessageId" => "m-2")), "a certificate without an RSA key"
     assert_equal 0, Bouncy::Providers::SnsVerifier::CERTIFICATES.size
-    assert_equal 200, post(signed_envelope("MessageId" => "m-3")), "the valid certificate, fetched at once"
+    travel 11.seconds
+    assert_equal 200, post(signed_envelope("MessageId" => "m-3")), "the valid certificate, well before SNS's next retry"
     assert_requested :get, CERT_URL, times: 3
     assert_equal 1, Bouncy::Providers::SnsVerifier::CERTIFICATES.size
   end

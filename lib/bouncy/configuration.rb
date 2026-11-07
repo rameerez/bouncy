@@ -49,11 +49,18 @@ module Bouncy
     # which reads the account list. :strict blocks every Permanent bounce, whatever its subtype,
     # and every recipient a complaint names. It defaults to :cautious while a sync runs and to
     # :strict when require_fresh_sync is false, because then nothing reads the account list.
+    #
+    # sync_max_pages, sync_max_entries and sync_max_duration bound the work of one provider
+    # scan (a sync, or the list read of a provider release). A scan that reaches any of them
+    # stops and is recorded incomplete: the entries it read still add restrictions, but no
+    # restriction is cleared for being absent, and a release refuses to run. Memory holds one
+    # page of 1,000 entries plus a few bytes per address.
     attr_writer :webhook_blocking
     attr_accessor :provider, :scope, :interception, :record_deliveries,
                   :retention, :maximum_event_age, :stale_after, :after_block, :after_release,
                   :after_event, :adapter, :soft_bounce_threshold, :soft_bounce_window,
-                  :soft_bounce_block_for, :require_fresh_sync, :on_notification
+                  :soft_bounce_block_for, :require_fresh_sync, :on_notification,
+                  :sync_max_pages, :sync_max_entries, :sync_max_duration
     attr_reader :ses
 
     def initialize
@@ -67,6 +74,9 @@ module Bouncy
       @soft_bounce_window = 30.days
       @soft_bounce_block_for = 30.days
       @require_fresh_sync = true
+      @sync_max_pages = 1_000
+      @sync_max_entries = 1_000_000
+      @sync_max_duration = 15.minutes
       @ses = Ses.new
       @after_block = @after_release = @after_event = ->(_event) {}
       @on_notification = ->(_notification) {}
@@ -85,6 +95,8 @@ module Bouncy
     def webhook_blocking = @webhook_blocking || (require_fresh_sync == false ? :strict : :cautious)
 
     def configured? = !scope.to_s.strip.empty?
+
+    def sync_limits = Providers::Limits.new(pages: sync_max_pages, entries: sync_max_entries, duration: sync_max_duration)
 
     def validate!
       raise ConfigurationError, "Set config.scope to the provider account and region" unless configured?
@@ -108,6 +120,10 @@ module Bouncy
       unless [soft_bounce_window, soft_bounce_block_for].all? { |duration| duration.is_a?(Numeric) || duration.is_a?(ActiveSupport::Duration) } &&
              soft_bounce_window.positive? && soft_bounce_block_for.positive?
         raise ConfigurationError, "soft_bounce_window and soft_bounce_block_for must be positive durations"
+      end
+      unless [sync_max_pages, sync_max_entries].all? { |limit| limit.is_a?(Integer) && limit.positive? } &&
+             (sync_max_duration.is_a?(Numeric) || sync_max_duration.is_a?(ActiveSupport::Duration)) && sync_max_duration.positive?
+        raise ConfigurationError, "sync_max_pages and sync_max_entries must be positive integers, and sync_max_duration a positive duration"
       end
 
       self

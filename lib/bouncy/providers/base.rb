@@ -8,8 +8,28 @@ module Bouncy
       end
     end
 
-    Snapshot = Data.define(:entries, :scope, :complete, :policy_verified, :started_at, :finished_at, :policy_reason) do
-      def initialize(policy_reason: nil, **members) = super
+    # The result of reading a provider list. A scan that streamed its pages returns no entries
+    # here; incomplete_reason says why a scan stopped before the end of the list.
+    Snapshot = Data.define(:entries, :scope, :complete, :policy_verified, :started_at, :finished_at, :policy_reason,
+                           :incomplete_reason) do
+      def initialize(policy_reason: nil, incomplete_reason: nil, **members) = super
+    end
+
+    # One page of a scan, handed to the caller as soon as it is read. authoritative: an exact
+    # identifier that the address had before and that this page does not list may be dropped
+    # once a direct lookup confirms that it is absent. observed_at: when the page was read.
+    Page = Data.define(:entries, :scope, :authoritative, :policy_verified, :observed_at)
+
+    # Total work one scan may do. Past any limit the scan stops and reports itself incomplete,
+    # so its pages still add restrictions but nothing is cleared for being absent from it.
+    Limits = Data.define(:pages, :entries, :duration) do
+      # The reason to stop after this much work, or nil to go on.
+      def exceeded(pages:, entries:, started_at:)
+        return "page limit (#{self.pages}) reached" if pages >= self.pages
+        return "entry limit (#{self.entries}) reached" if entries >= self.entries
+
+        "time limit (#{duration.to_i}s) reached" if Time.current - started_at >= duration
+      end
     end
 
     # Result of the sending-policy check: verified, or the plain-language reason it is not.
@@ -19,6 +39,17 @@ module Bouncy
       def snapshot = raise(NotImplementedError)
       def lookup(_entry) = raise(NotImplementedError)
       def release(_entries) = raise(NotImplementedError)
+
+      # Yields the provider list one Page at a time and returns the Snapshot that says whether
+      # the list was read to the end. An adapter that can page overrides this to keep only one
+      # page in memory and to honour the limits; this default reads the whole snapshot and
+      # yields it as one page, as 0.2.2 did.
+      def scan(_limits = nil)
+        snapshot = self.snapshot
+        yield Page.new(entries: snapshot.entries, scope: snapshot.scope, authoritative: snapshot.complete,
+                       policy_verified: snapshot.policy_verified, observed_at: snapshot.finished_at)
+        snapshot
+      end
     end
   end
 end

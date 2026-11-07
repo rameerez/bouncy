@@ -90,7 +90,7 @@ The override applies to status and predicates as well as scopes. Your app must p
 | `Bouncy.bootstrap!` | Return a fresh complete sync, running one if needed; raise if freshness and policy cannot be established. Explicit cutover check. |
 | `Bouncy.last_sync` | Latest sync summary, including recorded failures, or `nil`. |
 | `Bouncy.last_successful_sync` | Latest summary marked complete, possibly old, or `nil`. |
-| `Bouncy.sync_fresh?` | True only when the latest summary is complete and within `stale_after`. A later recorded failure makes it false. |
+| `Bouncy.sync_fresh?` | True when a complete, policy-verified summary is within `stale_after` and no later summary reported the sending policy unverified. A later failed or truncated sync does not make it false. `Bouncy.sync_fresh?(event)` checks that one summary. |
 | `Bouncy.configured?` | Whether a nonblank scope is assigned; no AWS verification. |
 | `Bouncy.scope` | Configured scope after local configuration validation. |
 | `Bouncy.unblocked { ... }` | Temporarily bypass interception for synchronous delivery in this execution context. Does not travel with queued jobs. |

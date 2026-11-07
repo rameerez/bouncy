@@ -133,9 +133,10 @@ class SesTest < BouncyTest
 
   test "control confirmation uses signed token and topic rather than SubscribeURL" do
     assert @adapter.control("Type" => "SubscriptionConfirmation", "TopicArn" => "arn:aws:sns:us-east-1:123456789012:feedback",
-                            "Token" => "signed-token", "SubscribeURL" => "https://attacker.invalid/")
+                            "Token" => "signed-token", "SubscribeURL" => "https://attacker.invalid/",
+                            "MessageId" => "confirmation-1", "Timestamp" => Time.current.iso8601)
     assert_equal({ topic_arn: "arn:aws:sns:us-east-1:123456789012:feedback", token: "signed-token" }, @sns.api_requests.last[:params])
-    assert @adapter.control("Type" => "UnsubscribeConfirmation")
+    assert @adapter.control("Type" => "UnsubscribeConfirmation", "MessageId" => "unsubscribe-1", "Timestamp" => Time.current.iso8601)
     refute @adapter.control("Type" => "Notification")
     assert_equal 1, @sns.api_requests.size
   end

@@ -65,9 +65,26 @@ module Bouncy
     def events = configured? ? Event.where(scope: scope) : Event.none
     def last_sync = events.where(kind: "sync").order(created_at: :desc, id: :desc).first
 
-    def sync_fresh?(sync = last_sync)
-      !!(configured? && sync && sync.scope == scope && sync.details["complete"] && sync.created_at >= configuration.stale_after.ago)
+    # With no argument: true when a complete, policy-verified sync finished within stale_after
+    # and no later sync reported the sending policy unverified. A later attempt that failed or
+    # stopped at a limit read nothing that contradicts the mirror, so it does not end freshness:
+    # one throttled hourly run must not stop enforcing known bounces and complaints. With a sync
+    # event: whether that one summary is complete and recent.
+    def sync_fresh?(sync = nil)
+      return false unless configured?
+      return fresh_summary?(sync) if sync
+
+      cutoff = configuration.stale_after.ago
+      events.where(kind: "sync").where("created_at >= ?", cutoff).order(created_at: :desc, id: :desc).each do |event|
+        return fresh_summary?(event) if event.details["complete"] || event.details["policy_verified"] == false
+      end
+      false
     end
+
+    def fresh_summary?(sync)
+      !!(sync.scope == scope && sync.details["complete"] && sync.created_at >= configuration.stale_after.ago)
+    end
+    private :fresh_summary?
 
     def bootstrap!
       sync! unless sync_fresh?
