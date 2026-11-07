@@ -74,6 +74,10 @@ module Bouncy
       rescue DeadlineExceeded => e
         Snapshot.new(entries: [], scope: @configuration.scope, complete: false, policy_verified: policy&.verified,
                      policy_reason: policy&.reason, incomplete_reason: e.message, started_at: started_at, finished_at: Time.current)
+      rescue ProviderError => e
+        # Preserve an explicit negative policy finding even if listing or applying a page fails.
+        e.policy_check = policy if policy&.verified == false
+        raise
       end
 
       def lookup(email)

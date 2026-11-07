@@ -12,7 +12,10 @@ module Bouncy
   class Error < StandardError; end
   class InvalidAddress < Error; end
   class ConfigurationError < Error; end
-  class ProviderError < Error; end
+
+  class ProviderError < Error
+    attr_accessor :policy_check
+  end
 
   class ReleaseFailed < ProviderError
     attr_reader :outcomes

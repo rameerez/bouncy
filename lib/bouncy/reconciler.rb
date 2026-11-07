@@ -88,7 +88,12 @@ module Bouncy
                                                       "entries" => total || 0, "added" => counts&.[](:added).to_i, "released" => 0,
                                                       "started_at" => started_at.iso8601(6), "finished_at" => Time.current.iso8601(6) })
     rescue ProviderError => e
-      Store.event!("sync", source: "sync", details: { "complete" => false, "error_class" => e.class.name })
+      details = { "complete" => false, "error_class" => e.class.name }
+      if e.policy_check&.verified == false
+        details["policy_verified"] = false
+        details["policy_reason"] = e.policy_check.reason
+      end
+      Store.event!("sync", source: "sync", details: details)
       raise
     end
 

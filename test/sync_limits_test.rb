@@ -182,6 +182,40 @@ class SyncLimitsTest < BouncyTest
     end
   end
 
+  test "an unverified policy survives a listing failure and stops dropping previously mirrored complaints" do
+    Bouncy.configuration.interception = :drop
+    @ses.stub_responses(:list_suppressed_destinations, suppressed_destination_summaries: [summary("complaint@example.com", reason: "COMPLAINT")])
+    Bouncy.sync!
+    assert Bouncy.sync_fresh?
+    assert Bouncy.blocked?("complaint@example.com")
+    travel 1.minute
+
+    @ses.stub_responses(:get_account, suppression_attributes: { suppressed_reasons: ["BOUNCE"] })
+    @ses.stub_responses(:list_suppressed_destinations, "TooManyRequestsException")
+    assert_raises(Bouncy::ProviderError) { Bouncy.sync! }
+    assert_equal false, Bouncy.last_sync.details["policy_verified"]
+    assert_match(/BOUNCE/, Bouncy.last_sync.details["policy_reason"])
+    refute Bouncy.sync_fresh?
+
+    ActionMailer::Base.deliveries.clear
+    message = Mail.new(from: "sender@example.com", to: "complaint@example.com", body: "receipt")
+    deliver(message)
+    assert_equal ["complaint@example.com"], message.smtp_envelope_to
+    assert_equal 1, ActionMailer::Base.deliveries.size
+    refute Bouncy.events.where(kind: "skipped").sole.details["dropped"]
+  end
+
+  test "a listing failure after a verified policy keeps a fresh mirror in force" do
+    @ses.stub_responses(:list_suppressed_destinations, suppressed_destination_summaries: [])
+    Bouncy.sync!
+    assert Bouncy.sync_fresh?
+    travel 1.minute
+    @ses.stub_responses(:list_suppressed_destinations, "TooManyRequestsException")
+    assert_raises(Bouncy::ProviderError) { Bouncy.sync! }
+    assert_nil Bouncy.last_sync.details["policy_verified"]
+    assert Bouncy.sync_fresh?
+  end
+
   test "a failed or truncated sync keeps a fresh mirror in force; an unverified policy or old age ends it" do
     Bouncy.configuration.adapter = @provider
     @provider.entries = [entry]
