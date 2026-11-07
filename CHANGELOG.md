@@ -2,10 +2,13 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-07
+
 Hardening from the review of the first app that moved its own suppression table to Bouncy (#10). There is no new migration.
 
 ### Fixed
 
+- A sync that finds an unverified sending policy records that finding even if the subsequent provider list fails, so the earlier mirror no longer stays fresh and suppresses mail under an invalid policy. A listing failure without an unverified finding still leaves a recent complete sync fresh.
 - A sync reads the SES suppression list one page at a time and applies each page before it requests the next, and a provider release keeps only the entries of the address it releases, because both held the whole list in memory (with a second grouped copy in the sync), which could exhaust a small host's memory. The sync's table of starting lock versions and of listed addresses is keyed by a hash of the address, not the address.
 - A monotonic `sync_max_duration` deadline (15 minutes) spans the local scan, provider pages and absence reconciliation. A timeout is incomplete and rolls back absence-based releases; completed page additions remain. Page and entry limits still stop enumeration and provider release refuses an incomplete scan. A single in-flight operation may finish after the deadline.
 - The SNS certificate cache remembers failed URLs for 10 seconds. Certificate downloads have no Bouncy admission cap by default, so rotating forged URLs cannot exhaust a shared budget or block a genuine certificate through Bouncy admission control. An optional per-process concurrency cap waits at most two seconds; sustained saturation can exhaust SNS retries, so use monitored dead-letter recovery if enabled. A same-URL rotation during the five-second refetch interval answers 503 for retry.
