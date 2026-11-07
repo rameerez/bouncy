@@ -15,12 +15,17 @@ module Bouncy
       version = row.lock_version
       started_at = Time.current
       if at == :provider
-        snapshot = @adapter.snapshot
+        # Only this address's entries are kept from each page, not the whole list.
+        entries = []
+        snapshot = @adapter.scan(Bouncy.configuration.sync_limits) do |page|
+          raise UnsafeSnapshot, "Release requires a complete snapshot of the configured sending scope" unless page.scope == Bouncy.scope
+
+          entries.concat(page.entries.select { |entry| Identity.normalize(entry.email) == key })
+        end
         unless snapshot.complete && snapshot.policy_verified && snapshot.scope == Bouncy.scope
           raise UnsafeSnapshot, "Release requires a complete snapshot of the configured sending scope"
         end
 
-        entries = snapshot.entries.select { |entry| Identity.normalize(entry.email) == key }
         # Historical exact identifiers still need checking if a list page raced a write.
         entries += row.provider_entries.map do |entry|
           Providers::Entry.new(email: entry.fetch("email"), reason: entry.fetch("reason"), updated_at: Time.iso8601(entry.fetch("provider_updated_at")))
@@ -47,6 +52,8 @@ module Bouncy
                                                        "actor" => actor.to_s.truncate(200), "outcomes" => outcomes })
         current
       end
+    rescue Providers::DeadlineExceeded
+      raise UnsafeSnapshot, "Release requires a complete snapshot within the time limit"
     rescue ProviderError, ReleaseConflict => e
       Store.event!("release_failed", email: key, details: { "error_class" => e.class.name,
                                                             "outcomes" => e.is_a?(ReleaseFailed) ? e.outcomes : [] })

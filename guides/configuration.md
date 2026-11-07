@@ -24,7 +24,11 @@ Replace the examples with your actual deployment. Set `all_sending_paths_listed`
 | `scope` | `nil` | `ses:<account-id>:<region>:account`; at most 191 characters. Must match the AWS caller and SES client region. |
 | `interception` | `:log` | `:log` previews dropping, `:drop` removes enforceable recipients, `:off` disables the interceptor. |
 | `stale_after` | `2.hours` | Freshness window for complete syncs and address observations. Keep it positive and longer than your sync interval. |
-| `require_fresh_sync` | `true` | `true` enforces provider and webhook evidence only while a complete sync is fresh. `false` enforces every recorded block with no sync, for an app that runs no `SyncJob`. |
+| `require_fresh_sync` | `true` | `true` enforces provider and webhook evidence only while a complete, policy-verified sync is younger than `stale_after`; a later failed or truncated sync does not end that, but repeated failures past `stale_after` stop dropping known bounces and complaints. `false` enforces every recorded block whatever the sync state, for an app that runs no `SyncJob` or prefers to keep enforcing through sync outages. See [monitor the mirror](operations.md#monitor-the-mirror). |
+| `sns_certificate_fetch_concurrency` | `nil` | No admission cap by default. A positive integer enables a per-process cap and a two-second wait; saturation can outlast SNS retries and lose genuine messages. Use a monitored dead-letter queue with replay if enabled. |
+| `sync_max_pages` | `1_000` | Most list pages one provider scan reads (SES returns up to 1,000 entries a page). See [sync limits](#sync-limits). |
+| `sync_max_entries` | `1_000_000` | Most entries one provider scan reads. |
+| `sync_max_duration` | `15.minutes` | Monotonic deadline for sync, including local scan and absence reconciliation; an in-flight operation can overshoot. Provider release applies it to enumeration. |
 | `webhook_blocking` | `:cautious` with `require_fresh_sync`, `:strict` without | Which notifications block. `:cautious` blocks General/NoEmail bounces and complaints naming one recipient; the sync covers the rest. `:strict` blocks every Permanent bounce and every recipient a complaint names. See [bounce handling](bounce-handling.md#ses-event-classification). |
 | `record_deliveries` | `false` | Record normalized per-recipient SES Delivery events when enabled and routed to the topic. Server acceptance is not inbox placement. |
 | `retention` | `90.days` | Delete events older than this by local creation time when the prune job runs. Does not delete state rows. |
@@ -81,3 +85,9 @@ Leave `scope` unset in environments that should not use Bouncy. Status reports `
 `:off` only disables interception. It does not disable configured webhooks, synchronization or explicit mutations. A test that exercises those paths needs an isolated database and stubbed provider clients. Never use production credentials for an offline test.
 
 There is no built-in admin framework, scheduler, AWS provisioning mode, remote manual block, marketing unsubscribe manager or resend setting. The host supplies those separate workflows where needed.
+
+## Sync limits
+
+A sync and provider release enumerate SES one page at a time. Reconciliation also stores a hash and lock version for each local row and a hash for each listed address; memory grows with both populations, including inactive local release-fence rows, plus a page of up to 1,000 entries. Ruby hash and set overhead is more than the raw hash size. A provider release retains only the target address's entries.
+
+`sync_max_pages` and `sync_max_entries` stop after a page, so the entry limit may overshoot by up to one page. The monotonic `sync_max_duration` covers the initial local scan, provider enumeration and absence reconciliation. Checks occur between operations: a blocking database or AWS request, page grouping, transaction commit, or callback can finish after the deadline. A timeout after enumeration rolls back all absence-based changes and records `complete: false`, with `enumerated: true`; earlier truncation records `enumerated: false`. Additions already committed remain. Provider release refuses an incomplete enumeration; its subsequent remote deletes are not covered by the scan deadline. Raise the limits if the list never fits: an incomplete sync cannot clear absent entries.

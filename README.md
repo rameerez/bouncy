@@ -100,6 +100,8 @@ config.middleware.insert_before 0, Bouncy::BodyLimit, path: "/bouncy/webhooks/se
 
 Use the path your app routes to the receiver. The limit covers that path with a trailing slash or a format suffix, and also the full path when the app runs under a prefix; adjacent routes are untouched. The receiver keeps its own 2 MiB limit as well.
 
+By default Bouncy imposes no concurrency cap on SNS certificate downloads, so its admission control cannot refuse a genuine new certificate under forged-URL pressure. Failed URLs are cached for ten seconds; host/path pinning, bounded responses and short timeouts remain in force. To opt in to a per-process cap, set `config.sns_certificate_fetch_concurrency` to a positive integer. Requests then wait at most two seconds for a slot and answer 503 on exhaustion. Sustained saturation can outlast SNS retries and lose genuine notifications; configure a monitored SNS dead-letter queue and replay before enabling the cap.
+
 The receiver logs one warning for each message it refuses, with the status, the reason and the topic ARN (or the `SubscribeURL` host of a failed confirmation). The topic and host appear only when they pass strict SNS validation, and as `<invalid>` otherwise, so no address, token or other raw field of the body reaches the log. That line is how a dead subscription shows up in production:
 
 ```text
@@ -137,7 +139,10 @@ Bouncy.blocked
 Bouncy.events.for("ada@example.com").recent.limit(20)
 ```
 
-`blocked?` describes known restrictions, not guaranteed deliverability or whether this particular message will be dropped. Provider-derived dropping requires a fresh, complete, policy-verified sync, unless you [run without a sync](#run-without-a-sync). Independent manual and active soft holds apply even when the mirror is stale. Recognized database outages fail open; the status API exposes `:unavailable`.
+`blocked?` describes known restrictions, not guaranteed deliverability or whether this particular message will be dropped. Provider-derived dropping requires a fresh, complete, policy-verified sync, unless you [run without a sync](#run-without-a-sync).
+
+> [!IMPORTANT]
+> With the default `config.require_fresh_sync = true`, known hard bounces and complaints, webhook ones included, are dropped only while a complete, policy-verified sync is younger than `config.stale_after` (two hours). One failed hourly run is absorbed, but if syncs keep failing past that window, Bouncy stops dropping mail to those addresses until a sync succeeds. Alert on `Bouncy.sync_fresh?` and on `Bouncy::SyncJob` failures. To keep dropping on recorded evidence through sync outages, set `config.require_fresh_sync = false` and keep the sync running; see [run without a sync](#run-without-a-sync). Independent manual and active soft holds apply even when the mirror is stale. Recognized database outages fail open; the status API exposes `:unavailable`.
 
 For a list page, load all addresses in one query:
 
@@ -279,7 +284,7 @@ By default a webhook block drops mail only while a recent sync verified the prov
 config.require_fresh_sync = false
 ```
 
-Every recorded block then drops mail with no `Bouncy::SyncJob` at all. Nothing clears a webhook block on its own. `Bouncy.forget!` removes the local record; `Bouncy.release!` also reads and changes the account's suppression list, which other apps on a shared account rely on.
+Every recorded block then drops mail with no `Bouncy::SyncJob` at all. You can keep the sync running too: it still imports the account list and clears entries that left it, and a sync outage no longer stops enforcement. In that case set `config.webhook_blocking` explicitly (`:cautious` leaves the account-list cases to the sync). Nothing clears a webhook block on its own. `Bouncy.forget!` removes the local record; `Bouncy.release!` also reads and changes the account's suppression list, which other apps on a shared account rely on.
 
 Without a sync, the webhook must also decide alone which notifications block, so `config.webhook_blocking` defaults to `:strict`:
 

@@ -7,6 +7,13 @@ module Bouncy
       SNS_DOMAINS = { "aws" => "amazonaws.com", "aws-us-gov" => "amazonaws.com", "aws-cn" => "amazonaws.com.cn" }.freeze
       # SNS answers a SubscribeURL visit with a short XML document.
       CONFIRMATION_LIMIT = 64 * 1024
+      # Entries per ListSuppressedDestinations request, the most SES returns.
+      PAGE_SIZE = 1000
+      # A subscription token is valid for three days, so an older SubscriptionConfirmation is a
+      # replay, not a retry. SNS retries a delivery for at most a few hours by default.
+      CONTROL_MAX_AGE = 3 * 24 * 3600
+      # The clock skew a control message's Timestamp may show from the future.
+      CONTROL_MAX_SKEW = 5 * 60
 
       # The SubscribeURL as a URI when it is HTTPS on the topic's own regional SNS host, port 443,
       # with no userinfo and no fragment; nil for any other value.
@@ -27,26 +34,50 @@ module Bouncy
         @settings = configuration.ses
       end
 
-      def snapshot
-        started_at = Time.current
-        policy = policy_check
+      # The whole list in memory, for callers that want it. Bouncy itself streams with scan.
+      def snapshot(limits = @configuration.sync_limits)
         entries = []
-        tokens = []
+        result = scan(limits) { |page| entries.concat(page.entries) }
+        result.with(entries: entries)
+      end
+
+      # Reads the account list one page at a time and yields each page before the next request,
+      # so memory holds one page, never the list. Stops, incomplete, at the first limit reached.
+      def scan(limits = @configuration.sync_limits)
+        started_at = Time.current
+        deadline = limits.deadline || Deadline.new(limits.duration)
+        policy = policy_check
+        deadline.check!
+        tokens = Set.new
         token = nil
+        pages = count = 0
+        stopped = nil
         loop do
-          response = request { client.list_suppressed_destinations(page_size: 1000, next_token: token) }
-          response.suppressed_destination_summaries.each do |row|
+          deadline.check!
+          response = request { client.list_suppressed_destinations(page_size: PAGE_SIZE, next_token: token) }
+          pages += 1
+          entries = response.suppressed_destination_summaries.map do |row|
             Identity.normalize(row.email_address)
-            entries << Entry.new(email: row.email_address, reason: reason(row.reason), updated_at: row.last_update_time)
+            Entry.new(email: row.email_address, reason: reason(row.reason), updated_at: row.last_update_time)
           end
+          count += entries.size
+          yield Page.new(entries: entries, scope: @configuration.scope, authoritative: true,
+                         policy_verified: policy.verified, observed_at: Time.current)
+          deadline.check!
           token = response.next_token
           break if token.nil? || token.empty?
-          raise ProviderError, "SES repeated a pagination token" if tokens.include?(token)
-
-          tokens << token
+          raise ProviderError, "SES repeated a pagination token" unless tokens.add?(token)
+          break if (stopped = limits.exceeded(pages: pages, entries: count))
         end
-        Snapshot.new(entries: entries, scope: @configuration.scope, complete: true, policy_verified: policy.verified,
-                     policy_reason: policy.reason, started_at: started_at, finished_at: Time.current)
+        Snapshot.new(entries: [], scope: @configuration.scope, complete: stopped.nil?, policy_verified: policy.verified,
+                     policy_reason: policy.reason, incomplete_reason: stopped, started_at: started_at, finished_at: Time.current)
+      rescue DeadlineExceeded => e
+        Snapshot.new(entries: [], scope: @configuration.scope, complete: false, policy_verified: policy&.verified,
+                     policy_reason: policy&.reason, incomplete_reason: e.message, started_at: started_at, finished_at: Time.current)
+      rescue ProviderError => e
+        # Preserve an explicit negative policy finding even if listing or applying a page fails.
+        e.policy_check = policy if policy&.verified == false
+        raise
       end
 
       def lookup(email)
@@ -85,22 +116,33 @@ module Bouncy
         @authenticator.call(raw_body)
       end
 
+      # Each signed control message acts once. SNS sends the same MessageId again when the first
+      # answer was not 2xx, and a confirmed message replayed later is answered 200 without
+      # visiting SNS or recording anything again. A message older than CONTROL_MAX_AGE, or dated
+      # in the future, is refused, so the dedupe record only has to outlive that age.
       def control(envelope) # rubocop:disable Naming/PredicateMethod -- Adapter operation with side effects.
-        case envelope.fetch("Type")
-        when "SubscriptionConfirmation"
-          if @settings.subscription_confirmation == :subscribe_url
-            visit_subscribe_url(envelope)
+        type = envelope.fetch("Type")
+        return false unless CONTROL_TYPES.include?(type)
+
+        check_control_age!(envelope)
+        visit = type == "SubscriptionConfirmation" && @settings.subscription_confirmation == :subscribe_url
+        uri = self.class.subscribe_uri(envelope, @settings.region) if visit
+        raise MalformedMessage, "SubscribeURL is not on the topic's SNS host" if visit && !uri
+
+        key = Digest::SHA256.hexdigest(JSON.generate([@configuration.scope, "ses", "control", type, envelope.fetch("MessageId")]))
+        return true if Bouncy.events.exists?(dedupe_key: key)
+
+        if type == "SubscriptionConfirmation"
+          if visit
+            visit_subscribe_url(uri)
           else
             request { sns_client.confirm_subscription(topic_arn: envelope.fetch("TopicArn"), token: envelope.fetch("Token")) }
           end
-          Store.event!("subscription_confirmed", source: "webhook", details: { "via" => @settings.subscription_confirmation.to_s })
-          true
-        when "UnsubscribeConfirmation"
-          Store.event!("subscription_unsubscribed", source: "webhook")
-          true
+          record_control("subscription_confirmed", key, "via" => @settings.subscription_confirmation.to_s)
         else
-          false
+          record_control("subscription_unsubscribed", key)
         end
+        true
       end
 
       def parse(envelope)
@@ -121,16 +163,34 @@ module Bouncy
 
       private
 
+      CONTROL_TYPES = %w[SubscriptionConfirmation UnsubscribeConfirmation].freeze
+      private_constant :CONTROL_TYPES
+
+      def check_control_age!(envelope)
+        sent_at = Time.iso8601(envelope.fetch("Timestamp"))
+        # The dedupe record must outlive the age limit, so a short retention shortens the limit.
+        max_age = [CONTROL_MAX_AGE, @configuration.retention.to_i].min
+        raise MalformedMessage, "SNS control message is older than #{max_age}s" if sent_at < Time.current - max_age
+        raise MalformedMessage, "SNS control message is dated in the future" if sent_at > Time.current + CONTROL_MAX_SKEW
+      rescue ArgumentError, TypeError
+        raise MalformedMessage, "SNS control message has no valid Timestamp"
+      end
+
+      # Two deliveries of one message racing each other both act, which SNS tolerates; only one
+      # records it.
+      def record_control(kind, key, details = {})
+        Store.event!(kind, source: "webhook", dedupe_key: key, details: details)
+      rescue ActiveRecord::RecordNotUnique
+        nil
+      end
+
       # Confirms the subscription by visiting the SubscribeURL that SNS signed, so the credentials
-      # need no sns:ConfirmSubscription grant. Only an HTTPS URL on the topic's own regional SNS
-      # host is visited; any other URL is malformed for good. A transport failure or an answer
+      # need no sns:ConfirmSubscription grant. control has already refused any URL that is not
+      # HTTPS on the topic's own regional SNS host, as malformed for good. A transport failure or an answer
       # other than 2xx is a ProviderError: the receiver answers 503, and SNS sends the
       # confirmation again.
-      def visit_subscribe_url(envelope)
+      def visit_subscribe_url(uri)
         require "net/http"
-        uri = self.class.subscribe_uri(envelope, @settings.region)
-        raise MalformedMessage, "SubscribeURL is not on the topic's SNS host" unless uri
-
         code = nil
         Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 3, read_timeout: 5,
                                             verify_mode: OpenSSL::SSL::VERIFY_PEER, max_retries: 0) do |http|

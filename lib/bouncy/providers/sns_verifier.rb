@@ -10,34 +10,82 @@ module Bouncy
       # Signing certificates, shared by every receiver in the process: each request builds a new
       # adapter, and an app that subscribes to Send and Delivery events gets one SNS message per
       # mail. At most 16 certificate URLs, each kept for an hour. Only a certificate that the
-      # allowlisted, bounded download returned is kept; a failed download keeps nothing.
+      # allowlisted, bounded download returned is kept.
+      #
+      # Failed URLs are cached briefly. The optional per-process concurrency cap waits briefly
+      # for a slot, but sustained saturation can outlast SNS retries. No admission cap applies
+      # by default; a monitored dead-letter queue is needed for recovery if one is enabled.
       class CertificateCache
         Entry = Data.define(:pem, :fetched_at)
+        Failure = Data.define(:error, :message, :failed_at)
+        REMEMBERED = [ProviderError, AuthenticationError, Aws::SNS::MessageVerifier::VerificationError].freeze
 
-        def initialize(size:, ttl:)
+        def initialize(size:, ttl:, failure_ttl: 10, failures: 64, concurrency: nil, wait: 2)
           @size = size
           @ttl = ttl
+          @failure_ttl = failure_ttl
+          @failure_size = failures
+          @concurrency = concurrency
+          @wait = wait
           @entries = {}
+          @failures = {}
+          @in_flight = 0
+          @in_flight_urls = Hash.new(0)
           @mutex = Mutex.new
+          @available = ConditionVariable.new
         end
 
-        # The download runs outside the lock, so one slow fetch does not stop other requests.
-        def fetch(url)
-          entry = @mutex.synchronize { @entries[url] }
-          return entry.pem if entry && Time.now - entry.fetched_at < @ttl
+        # Check again after waiting: another request may have fetched the same certificate.
+        def fetch(url, concurrency: @concurrency)
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @wait
+          entry = @mutex.synchronize do
+            loop do
+              cached = @entries[url]
+              break cached if cached && Time.now - cached.fetched_at < @ttl
 
-          pem = yield
-          @mutex.synchronize do
-            @entries.delete(url)
-            @entries[url] = Entry.new(pem: pem, fetched_at: Time.now)
-            @entries.shift while @entries.size > @size
+              failure = @failures[url]
+              raise failure.error, failure.message if failure && Time.now - failure.failed_at < @failure_ttl
+
+              if concurrency.nil? || @in_flight < concurrency
+                @in_flight += 1
+                @in_flight_urls[url] += 1
+                break nil
+              end
+              remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+              raise ProviderError, "Too many SNS certificate downloads in progress" if remaining <= 0
+
+              @available.wait(@mutex, remaining)
+            end
           end
-          pem
+          return entry.pem if entry
+
+          begin
+            pem = yield
+            @mutex.synchronize do
+              @failures.delete(url)
+              @entries.delete(url)
+              @entries[url] = Entry.new(pem: pem, fetched_at: Time.now)
+              @entries.shift while @entries.size > @size
+            end
+            pem
+          rescue *REMEMBERED => e
+            @mutex.synchronize do
+              @failures.delete(url)
+              @failures[url] = Failure.new(error: e.class, message: e.message, failed_at: Time.now)
+              @failures.shift while @failures.size > @failure_size
+            end
+            raise
+          ensure
+            @mutex.synchronize do
+              @in_flight -= 1
+              @in_flight_urls[url] -= 1
+              @in_flight_urls.delete(url) if @in_flight_urls[url].zero?
+              @available.broadcast
+            end
+          end
         end
 
-        # Drops a certificate that failed a verification, so the next one fetches it again. A
-        # certificate fetched less than `after` seconds ago stays: a stream of forged messages
-        # must not turn into a stream of downloads.
+        # Do not refetch a recently fetched certificate for every forged signature.
         def forget(url, after:)
           @mutex.synchronize do
             entry = @entries[url]
@@ -48,22 +96,34 @@ module Bouncy
           end
         end
 
+        def retryable?(url, after:)
+          @mutex.synchronize do
+            entry = @entries[url]
+            @in_flight_urls.key?(url) || (entry && Time.now - entry.fetched_at < after)
+          end
+        end
+
         def size = @mutex.synchronize { @entries.size }
-        def clear = @mutex.synchronize { @entries.clear }
+        def clear = @mutex.synchronize { [@entries, @failures].each(&:clear) }
       end
 
       CERTIFICATES = CertificateCache.new(size: 16, ttl: 3600)
       # A cached certificate older than this is fetched again, once, when a signature fails.
-      REFETCH_AFTER = 60
+      REFETCH_AFTER = 5
 
       class BoundedVerifier < Aws::SNS::MessageVerifier
+        def initialize(configuration = Bouncy.configuration)
+          super()
+          @configuration = configuration
+        end
+
         private
 
         # The SDK's download_pem checks the URL and the PEM framing, and calls the bounded
         # https_get below. A certificate is cached only once it parses and carries the RSA key
         # that SNS signs with; any other body is refused and never kept, so the next request
         # fetches again at once.
-        def pem(uri) = CERTIFICATES.fetch(uri.to_s) { usable(download_pem(uri)) }
+        def pem(uri) = CERTIFICATES.fetch(uri.to_s, concurrency: @configuration.sns_certificate_fetch_concurrency) { usable(download_pem(uri)) }
 
         def usable(pem)
           key = OpenSSL::X509::Certificate.new(pem).public_key
@@ -104,7 +164,7 @@ module Bouncy
                                     "pin aws-sdk-sns to a release tested with this version of bouncy"
         end
 
-        @verifier = configuration.ses.sns_message_verifier || BoundedVerifier.new
+        @verifier = configuration.ses.sns_message_verifier || BoundedVerifier.new(configuration)
         @mutex = Mutex.new
       end
 
@@ -122,6 +182,8 @@ module Bouncy
           raise MalformedMessage, "SNS signable fields must be strings"
         end
 
+        raise AuthenticationError, "SNS signature could not be verified" unless %w[1 2].include?(envelope["SignatureVersion"])
+
         authorize!(envelope)
         verify(raw_body, envelope.fetch("SigningCertURL"))
         envelope
@@ -133,12 +195,18 @@ module Bouncy
 
       private
 
-      # A certificate that SNS rotated at the same URL fails once from the cache; it is fetched
-      # again, once, and the message is checked with the new one.
+      # A newly cached certificate may have rotated at the same URL. Defer verification with
+      # a retryable response until the short refetch interval passes, then fetch and retry once.
       def verify(raw_body, url)
         @mutex.synchronize { @verifier.authenticate!(raw_body) }
       rescue Aws::SNS::MessageVerifier::VerificationError, OpenSSL::OpenSSLError
-        raise unless @verifier.is_a?(BoundedVerifier) && CERTIFICATES.forget(url, after: REFETCH_AFTER)
+        raise unless @verifier.is_a?(BoundedVerifier)
+
+        unless CERTIFICATES.forget(url, after: REFETCH_AFTER)
+          raise ProviderError, "SNS certificate recheck is temporarily deferred" if CERTIFICATES.retryable?(url, after: REFETCH_AFTER)
+
+          raise
+        end
 
         @mutex.synchronize { @verifier.authenticate!(raw_body) }
       end

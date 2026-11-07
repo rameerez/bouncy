@@ -43,6 +43,8 @@ class WebhookTest < BouncyTest
   test "tampered and unknown signatures fail without storing policy" do
     envelope = JSON.parse(signed_envelope)
     envelope["Message"] += " "
+    assert_equal 503, post(JSON.generate(envelope))
+    travel 6.seconds
     assert_equal 401, post(JSON.generate(envelope))
     envelope["SignatureVersion"] = "9"
     assert_equal 401, post(JSON.generate(envelope))
@@ -180,7 +182,7 @@ class WebhookTest < BouncyTest
     assert_requested :get, CERT_URL, times: 2
   end
 
-  test "a certificate rotated at the same URL is fetched again once, but not within a minute of the last fetch" do
+  test "a certificate rotated at the same URL gets a retryable response and is rechecked after five seconds" do
     key = OpenSSL::PKey::RSA.new(2048)
     rotated = OpenSSL::X509::Certificate.new.tap do |cert|
       cert.version = 2
@@ -197,14 +199,14 @@ class WebhookTest < BouncyTest
     canonical = Aws::SNS::MessageVerifier::SIGNABLE_KEYS.filter_map { |name| "#{name}\n#{envelope[name]}\n" if envelope[name] }.join
     envelope["Signature"] = Base64.strict_encode64(key.sign(OpenSSL::Digest.new("SHA256"), canonical))
 
-    assert_equal 401, post(JSON.generate(envelope)), "fetched seconds ago: no second download"
+    assert_equal 503, post(JSON.generate(envelope)), "fetched seconds ago: retry once recheck is allowed"
     assert_requested :get, CERT_URL, times: 1
-    travel 2.minutes
+    travel 6.seconds
     assert_equal 200, post(JSON.generate(envelope))
     assert_requested :get, CERT_URL, times: 2
   end
 
-  test "a certificate that does not parse or has no RSA key is refused and never cached, so a valid one is fetched at once" do
+  test "a certificate that does not parse or has no RSA key is refused and never cached, and a valid one is fetched after the failure pause" do
     ec_key = OpenSSL::PKey::EC.generate("prime256v1")
     ec_certificate = OpenSSL::X509::Certificate.new.tap do |cert|
       cert.version = 2
@@ -220,9 +222,13 @@ class WebhookTest < BouncyTest
 
     assert_equal 401, post(signed_envelope("MessageId" => "m-1")), "PEM framing without a certificate"
     assert_equal 0, Bouncy::Providers::SnsVerifier::CERTIFICATES.size
+    assert_equal 401, post(signed_envelope("MessageId" => "m-2")), "the failure is remembered for a few seconds"
+    assert_requested :get, CERT_URL, times: 1
+    travel 11.seconds
     assert_equal 401, post(signed_envelope("MessageId" => "m-2")), "a certificate without an RSA key"
     assert_equal 0, Bouncy::Providers::SnsVerifier::CERTIFICATES.size
-    assert_equal 200, post(signed_envelope("MessageId" => "m-3")), "the valid certificate, fetched at once"
+    travel 11.seconds
+    assert_equal 200, post(signed_envelope("MessageId" => "m-3")), "the valid certificate, well before SNS's next retry"
     assert_requested :get, CERT_URL, times: 3
     assert_equal 1, Bouncy::Providers::SnsVerifier::CERTIFICATES.size
   end
@@ -259,7 +265,7 @@ class WebhookTest < BouncyTest
       assert_equal 413, post("x" * (Bouncy::Webhook::BODY_LIMIT + 1))
       tampered = JSON.parse(signed_envelope)
       tampered["Message"] += " "
-      assert_equal 401, post(JSON.generate(tampered))
+      assert_equal 503, post(JSON.generate(tampered))
       assert_equal 401, post(signed_envelope("TopicArn" => foreign))
       assert_equal 400, post(signed_envelope("Type" => "Other"))
       Bouncy.configuration.scope = nil
@@ -270,7 +276,7 @@ class WebhookTest < BouncyTest
     assert_match(/\(405\): method GET is not POST/, lines[0])
     assert_match(/\(400\): empty body/, lines[1])
     assert_match(/\(413\): body over/, lines[2])
-    assert_match(/\(401\): SNS signature could not be verified; topic #{TOPIC}/, lines[3])
+    assert_match(/\(503\): SNS certificate recheck is temporarily deferred; topic #{TOPIC}/, lines[3])
     assert_match(/\(401\): SNS topic is not authorized; topic #{foreign}/, lines[4])
     assert_match(/\(400\): Unsupported SNS control type; topic #{TOPIC}/, lines[5])
     assert_match(/\(503\): Set config.scope/, lines[6])
