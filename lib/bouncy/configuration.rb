@@ -50,6 +50,11 @@ module Bouncy
     # and every recipient a complaint names. It defaults to :cautious while a sync runs and to
     # :strict when require_fresh_sync is false, because then nothing reads the account list.
     #
+    # sns_certificate_fetch_concurrency defaults to nil: no Bouncy admission cap. Set a
+    # positive integer to limit concurrent SNS certificate downloads per process, with a
+    # two-second wait. Under sustained pressure the cap can starve genuine certificates past
+    # SNS's retry window; use a monitored dead-letter queue with replay if you enable it.
+    #
     # sync_max_pages, sync_max_entries and sync_max_duration bound the work of one provider
     # scan and reconciliation (or the list read of a provider release). An incomplete sync
     # keeps additions and rolls back absence-based releases. Memory grows with local rows and
@@ -59,7 +64,7 @@ module Bouncy
                   :retention, :maximum_event_age, :stale_after, :after_block, :after_release,
                   :after_event, :adapter, :soft_bounce_threshold, :soft_bounce_window,
                   :soft_bounce_block_for, :require_fresh_sync, :on_notification,
-                  :sync_max_pages, :sync_max_entries, :sync_max_duration
+                  :sync_max_pages, :sync_max_entries, :sync_max_duration, :sns_certificate_fetch_concurrency
     attr_reader :ses
 
     def initialize
@@ -76,6 +81,7 @@ module Bouncy
       @sync_max_pages = 1_000
       @sync_max_entries = 1_000_000
       @sync_max_duration = 15.minutes
+      @sns_certificate_fetch_concurrency = nil
       @ses = Ses.new
       @after_block = @after_release = @after_event = ->(_event) {}
       @on_notification = ->(_notification) {}
@@ -119,6 +125,9 @@ module Bouncy
       unless [soft_bounce_window, soft_bounce_block_for].all? { |duration| duration.is_a?(Numeric) || duration.is_a?(ActiveSupport::Duration) } &&
              soft_bounce_window.positive? && soft_bounce_block_for.positive?
         raise ConfigurationError, "soft_bounce_window and soft_bounce_block_for must be positive durations"
+      end
+      unless sns_certificate_fetch_concurrency.nil? || (sns_certificate_fetch_concurrency.is_a?(Integer) && sns_certificate_fetch_concurrency.positive?)
+        raise ConfigurationError, "sns_certificate_fetch_concurrency must be a positive integer or nil"
       end
       unless [sync_max_pages, sync_max_entries].all? { |limit| limit.is_a?(Integer) && limit.positive? } &&
              (sync_max_duration.is_a?(Numeric) || sync_max_duration.is_a?(ActiveSupport::Duration)) && sync_max_duration.positive?

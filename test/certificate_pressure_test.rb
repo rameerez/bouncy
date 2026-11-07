@@ -60,6 +60,58 @@ class CertificatePressureTest < BouncyTest
     assert_requested :get, CERT_URL, times: 1
   end
 
+  test "default admission allows a genuine certificate while multiple forged downloads are blocked" do
+    assert_nil Bouncy.configuration.sns_certificate_fetch_concurrency
+    cache = Bouncy::Providers::SnsVerifier::CERTIFICATES
+    started = Queue.new
+    release = Queue.new
+    threads = Array.new(4) do |index|
+      Thread.new do
+        cache.fetch("forged-#{index}") do
+          started << true
+          release.pop
+          raise Bouncy::ProviderError, "synthetic 404"
+        end
+      rescue Bouncy::ProviderError
+        nil
+      end
+    end
+    4.times { started.pop }
+    genuine = Thread.new { Bouncy::Providers::SnsVerifier.new(Bouncy.configuration).call(signed_envelope) }
+    begin
+      assert genuine.join(3), "genuine verification must not wait for forged downloads"
+      assert_equal TOPIC, genuine.value.fetch("TopicArn")
+    ensure
+      4.times { release << true }
+      threads.each(&:join)
+      genuine.join
+    end
+  end
+
+  test "the verifier passes the configured opt-in cap to its shared certificate cache" do
+    Bouncy.configuration.sns_certificate_fetch_concurrency = 1
+    cache = Bouncy::Providers::SnsVerifier::CERTIFICATES
+    observed = nil
+    replacement = lambda do |_url, concurrency:, &block|
+      observed = concurrency
+      block.call
+    end
+    verifier = Bouncy::Providers::SnsVerifier::BoundedVerifier.new(Bouncy.configuration)
+    cache.stub(:fetch, replacement) { verifier.send(:pem, URI(CERT_URL)) }
+    assert_equal 1, observed
+  end
+
+  test "the optional certificate cap accepts only positive integers" do
+    [0, -1, 1.5, "2", false].each do |value|
+      Bouncy.configuration.sns_certificate_fetch_concurrency = value
+      assert_raises(Bouncy::ConfigurationError) { Bouncy.configuration.validate! }
+    end
+    [nil, 1, 2].each do |value|
+      Bouncy.configuration.sns_certificate_fetch_concurrency = value
+      assert Bouncy.configuration.validate!
+    end
+  end
+
   test "a new signing URL verifies after a previous certificate was cached" do
     assert_equal TOPIC, Bouncy::Providers::SnsVerifier.new(Bouncy.configuration).call(signed_envelope).fetch("TopicArn")
     rotated = "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-rotated.pem"

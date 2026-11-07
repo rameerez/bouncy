@@ -100,6 +100,8 @@ config.middleware.insert_before 0, Bouncy::BodyLimit, path: "/bouncy/webhooks/se
 
 Use the path your app routes to the receiver. The limit covers that path with a trailing slash or a format suffix, and also the full path when the app runs under a prefix; adjacent routes are untouched. The receiver keeps its own 2 MiB limit as well.
 
+By default Bouncy imposes no concurrency cap on SNS certificate downloads, so its admission control cannot refuse a genuine new certificate under forged-URL pressure. Failed URLs are cached for ten seconds; host/path pinning, bounded responses and short timeouts remain in force. To opt in to a per-process cap, set `config.sns_certificate_fetch_concurrency` to a positive integer. Requests then wait at most two seconds for a slot and answer 503 on exhaustion. Sustained saturation can outlast SNS retries and lose genuine notifications; configure a monitored SNS dead-letter queue and replay before enabling the cap.
+
 The receiver logs one warning for each message it refuses, with the status, the reason and the topic ARN (or the `SubscribeURL` host of a failed confirmation). The topic and host appear only when they pass strict SNS validation, and as `<invalid>` otherwise, so no address, token or other raw field of the body reaches the log. That line is how a dead subscription shows up in production:
 
 ```text

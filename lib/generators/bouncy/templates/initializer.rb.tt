@@ -26,6 +26,11 @@ Bouncy.configure do |config|
   # sns:ConfirmSubscription.
   # config.ses.subscription_confirmation = :subscribe_url
 
+  # Certificate downloads have no Bouncy admission cap by default. A positive per-process cap
+  # adds a two-second wait, but sustained saturation can lose genuine SNS notifications after
+  # retries expire. Enable monitored dead-letter recovery before setting it.
+  # config.sns_certificate_fetch_concurrency = 2
+
   # By default known bounces and complaints are dropped only while a complete sync is younger
   # than stale_after (2 hours): if syncs keep failing past that, they stop being dropped. Set
   # false to enforce recorded blocks whatever the sync state, with or without a sync job. With

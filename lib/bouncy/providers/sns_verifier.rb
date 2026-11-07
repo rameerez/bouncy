@@ -12,16 +12,15 @@ module Bouncy
       # mail. At most 16 certificate URLs, each kept for an hour. Only a certificate that the
       # allowlisted, bounded download returned is kept.
       #
-      # Unauthenticated requests share a small download concurrency cap. Wait briefly for a
-      # slot so a burst of fast 404s does not exclude a genuine new certificate. Failed URLs are
-      # cached briefly. Sustained saturation can still exhaust the wait and SNS's retry window;
-      # operators need a monitored dead-letter queue for durable recovery.
+      # Failed URLs are cached briefly. The optional per-process concurrency cap waits briefly
+      # for a slot, but sustained saturation can outlast SNS retries. No admission cap applies
+      # by default; a monitored dead-letter queue is needed for recovery if one is enabled.
       class CertificateCache
         Entry = Data.define(:pem, :fetched_at)
         Failure = Data.define(:error, :message, :failed_at)
         REMEMBERED = [ProviderError, AuthenticationError, Aws::SNS::MessageVerifier::VerificationError].freeze
 
-        def initialize(size:, ttl:, failure_ttl: 10, failures: 64, concurrency: 2, wait: 2)
+        def initialize(size:, ttl:, failure_ttl: 10, failures: 64, concurrency: nil, wait: 2)
           @size = size
           @ttl = ttl
           @failure_ttl = failure_ttl
@@ -37,7 +36,7 @@ module Bouncy
         end
 
         # Check again after waiting: another request may have fetched the same certificate.
-        def fetch(url)
+        def fetch(url, concurrency: @concurrency)
           deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @wait
           entry = @mutex.synchronize do
             loop do
@@ -47,7 +46,7 @@ module Bouncy
               failure = @failures[url]
               raise failure.error, failure.message if failure && Time.now - failure.failed_at < @failure_ttl
 
-              if @in_flight < @concurrency
+              if concurrency.nil? || @in_flight < concurrency
                 @in_flight += 1
                 @in_flight_urls[url] += 1
                 break nil
@@ -113,13 +112,18 @@ module Bouncy
       REFETCH_AFTER = 5
 
       class BoundedVerifier < Aws::SNS::MessageVerifier
+        def initialize(configuration = Bouncy.configuration)
+          super()
+          @configuration = configuration
+        end
+
         private
 
         # The SDK's download_pem checks the URL and the PEM framing, and calls the bounded
         # https_get below. A certificate is cached only once it parses and carries the RSA key
         # that SNS signs with; any other body is refused and never kept, so the next request
         # fetches again at once.
-        def pem(uri) = CERTIFICATES.fetch(uri.to_s) { usable(download_pem(uri)) }
+        def pem(uri) = CERTIFICATES.fetch(uri.to_s, concurrency: @configuration.sns_certificate_fetch_concurrency) { usable(download_pem(uri)) }
 
         def usable(pem)
           key = OpenSSL::X509::Certificate.new(pem).public_key
@@ -160,7 +164,7 @@ module Bouncy
                                     "pin aws-sdk-sns to a release tested with this version of bouncy"
         end
 
-        @verifier = configuration.ses.sns_message_verifier || BoundedVerifier.new
+        @verifier = configuration.ses.sns_message_verifier || BoundedVerifier.new(configuration)
         @mutex = Mutex.new
       end
 

@@ -25,6 +25,7 @@ Replace the examples with your actual deployment. Set `all_sending_paths_listed`
 | `interception` | `:log` | `:log` previews dropping, `:drop` removes enforceable recipients, `:off` disables the interceptor. |
 | `stale_after` | `2.hours` | Freshness window for complete syncs and address observations. Keep it positive and longer than your sync interval. |
 | `require_fresh_sync` | `true` | `true` enforces provider and webhook evidence only while a complete, policy-verified sync is younger than `stale_after`; a later failed or truncated sync does not end that, but repeated failures past `stale_after` stop dropping known bounces and complaints. `false` enforces every recorded block whatever the sync state, for an app that runs no `SyncJob` or prefers to keep enforcing through sync outages. See [monitor the mirror](operations.md#monitor-the-mirror). |
+| `sns_certificate_fetch_concurrency` | `nil` | No admission cap by default. A positive integer enables a per-process cap and a two-second wait; saturation can outlast SNS retries and lose genuine messages. Use a monitored dead-letter queue with replay if enabled. |
 | `sync_max_pages` | `1_000` | Most list pages one provider scan reads (SES returns up to 1,000 entries a page). See [sync limits](#sync-limits). |
 | `sync_max_entries` | `1_000_000` | Most entries one provider scan reads. |
 | `sync_max_duration` | `15.minutes` | Monotonic deadline for sync, including local scan and absence reconciliation; an in-flight operation can overshoot. Provider release applies it to enumeration. |
