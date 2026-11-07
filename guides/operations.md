@@ -60,7 +60,7 @@ Bouncy.last_sync&.details
 Bouncy.last_successful_sync&.created_at
 ```
 
-A successful authoritative summary has `complete: true`, `enumerated: true`, `policy_verified: true`, and entry/change counts. An enumerated list with unsupported policy has `complete: false` and an explanation in `policy_reason`. A recorded provider error has `complete: false` and `error_class`. A sync that stopped at a [work limit](configuration.md#sync-limits) has `complete: false`, `enumerated: false` and `incomplete_reason`, and logs a warning.
+A successful authoritative summary has `complete: true`, `enumerated: true`, `policy_verified: true`, and entry/change counts. An enumerated list with unsupported policy has `complete: false` and an explanation in `policy_reason`. A recorded provider error has `complete: false` and `error_class`. A sync that stopped at a [work limit](configuration.md#sync-limits) has `complete: false` and `incomplete_reason`, and logs a warning. `enumerated` remains true if the deadline expired during absence reconciliation after enumeration finished.
 
 `entries` counts exact provider entries; address counts are normalized. Metadata-only refreshes and unchanged restrictions do not emit per-address change events. Each completed reconciliation still emits a summary. A lock acquisition failure or some configuration/database failures can occur before a summary is recorded; monitor job failures as well as freshness.
 

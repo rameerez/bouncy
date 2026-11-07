@@ -29,55 +29,67 @@ class CertificatePressureTest < BouncyTest
     assert_equal 200, post(signed_envelope("MessageId" => "m-3")), "SNS's retry 20 seconds later finds the certificate"
   end
 
-  test "forged messages that rotate the certificate file name get a bounded number of downloads" do
-    bogus = stub_request(:get, %r{\Ahttps://sns\.us-east-1\.amazonaws\.com/SimpleNotificationService-forged\d+\.pem\z}).to_return(status: 404)
-    statuses = Array.new(15) do |index|
-      body = JSON.parse(signed_envelope("MessageId" => "f-#{index}",
-                                        "SigningCertURL" => "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-forged#{index}.pem"))
-      body["Signature"] = Base64.strict_encode64("forged")
-      post(JSON.generate(body))
+  test "a cold genuine certificate verifies during rotating forged certificate pressure" do
+    bogus = stub_request(:get, %r{\Ahttps://sns\.us-east-1\.amazonaws\.com/SimpleNotificationService-forged\d+\.pem\z})
+            .to_return do
+      sleep 0.001
+      { status: 404 }
     end
-    assert_equal [503], statuses.uniq
-    assert_requested bogus, times: 10
-    travel 61.seconds
-    assert_equal 200, post(signed_envelope("MessageId" => "m-1")), "the budget refills"
-  end
-
-  test "a URL that verified a signature is fetched again outside the budget" do
-    cache = Cache.new(size: 16, ttl: 3600, budget: 3, window: 60)
-    good = "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-good.pem"
-    cache.fetch(good) { "pem" }
-    cache.trust(good)
-    2.times { |index| cache.fetch("https://sns.us-east-1.amazonaws.com/SimpleNotificationService-x#{index}.pem") { "pem" } }
-    error = assert_raises(Bouncy::ProviderError) { cache.fetch("https://sns.us-east-1.amazonaws.com/SimpleNotificationService-y.pem") { "pem" } }
-    assert_match(/budget/, error.message)
-    travel 61.minutes
-    assert_equal "new", cache.fetch(good) { "new" }, "the trusted certificate expired and is fetched despite an exhausted budget"
-  end
-
-  test "at most two downloads run at once; a third request fails fast and retries later" do
-    cache = Cache.new(size: 16, ttl: 3600)
-    gate = Queue.new
-    started = Queue.new
-    threads = Array.new(2) do |index|
+    template = JSON.parse(signed_envelope)
+    ready = Queue.new
+    threads = Array.new(4) do |worker|
       Thread.new do
-        cache.fetch("https://sns.us-east-1.amazonaws.com/SimpleNotificationService-#{index}.pem") do
-          started << index
-          gate.pop
-          "pem-#{index}"
+        verifier = Bouncy::Providers::SnsVerifier.new(Bouncy.configuration)
+        ready << true
+        40.times do |index|
+          body = template.merge("SigningCertURL" => "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-forged#{(worker * 40) + index}.pem",
+                                "Signature" => Base64.strict_encode64("forged"))
+          begin
+            verifier.call(JSON.generate(body))
+          rescue Bouncy::ProviderError, Bouncy::AuthenticationError
+            # The forged request is refused; the worker continues under pressure.
+          end
         end
       end
     end
-    2.times { started.pop }
-    error = assert_raises(Bouncy::ProviderError) { cache.fetch("https://sns.us-east-1.amazonaws.com/SimpleNotificationService-2.pem") { "pem" } }
+    4.times { ready.pop }
+    verified = Bouncy::Providers::SnsVerifier.new(Bouncy.configuration).call(signed_envelope)
+    assert_equal TOPIC, verified.fetch("TopicArn")
+    threads.each(&:value)
+    assert_requested bogus, times: 160
+    assert_requested :get, CERT_URL, times: 1
+  end
+
+  test "a new signing URL verifies after a previous certificate was cached" do
+    assert_equal TOPIC, Bouncy::Providers::SnsVerifier.new(Bouncy.configuration).call(signed_envelope).fetch("TopicArn")
+    rotated = "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-rotated.pem"
+    stub_request(:get, rotated).to_return(body: CERT.to_pem)
+    assert_equal TOPIC, Bouncy::Providers::SnsVerifier.new(Bouncy.configuration).call(signed_envelope("SigningCertURL" => rotated)).fetch("TopicArn")
+    assert_requested :get, rotated, times: 1
+  end
+
+  test "a waiting download gets a released slot, and a long wait is bounded" do
+    cache = Cache.new(size: 16, ttl: 3600, concurrency: 1, wait: 0.1)
+    gate = Queue.new
+    started = Queue.new
+    first = Thread.new do
+      cache.fetch("first") do
+        started << true
+        gate.pop
+        "first"
+      end
+    end
+    started.pop
+    error = assert_raises(Bouncy::ProviderError) { cache.fetch("second") { "second" } }
     assert_match(/in progress/, error.message)
-    2.times { gate << :go }
-    assert_equal %w[pem-0 pem-1], threads.map(&:value)
-    assert_equal "pem", cache.fetch("https://sns.us-east-1.amazonaws.com/SimpleNotificationService-2.pem") { "pem" }
+    waiter = Thread.new { cache.fetch("third") { "third" } }
+    gate << true
+    assert_equal "first", first.value
+    assert_equal "third", waiter.value
   end
 
   test "a remembered failure raises its own error class, and the failure list is bounded" do
-    cache = Cache.new(size: 16, ttl: 3600, failures: 2, budget: 100)
+    cache = Cache.new(size: 16, ttl: 3600, failures: 2)
     urls = Array.new(3) { |index| "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-#{index}.pem" }
     urls.each do |url|
       assert_raises(Aws::SNS::MessageVerifier::VerificationError) do

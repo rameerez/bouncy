@@ -52,6 +52,8 @@ module Bouncy
                                                        "actor" => actor.to_s.truncate(200), "outcomes" => outcomes })
         current
       end
+    rescue Providers::DeadlineExceeded
+      raise UnsafeSnapshot, "Release requires a complete snapshot within the time limit"
     rescue ProviderError, ReleaseConflict => e
       Store.event!("release_failed", email: key, details: { "error_class" => e.class.name,
                                                             "outcomes" => e.is_a?(ReleaseFailed) ? e.outcomes : [] })

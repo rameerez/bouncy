@@ -22,13 +22,29 @@ module Bouncy
 
     # Total work one scan may do. Past any limit the scan stops and reports itself incomplete,
     # so its pages still add restrictions but nothing is cleared for being absent from it.
-    Limits = Data.define(:pages, :entries, :duration) do
-      # The reason to stop after this much work, or nil to go on.
-      def exceeded(pages:, entries:, started_at:)
-        return "page limit (#{self.pages}) reached" if pages >= self.pages
-        return "entry limit (#{self.entries}) reached" if entries >= self.entries
+    class DeadlineExceeded < StandardError; end
 
-        "time limit (#{duration.to_i}s) reached" if Time.current - started_at >= duration
+    # A monotonic deadline shared by the local scan, provider scan and absence pass.
+    class Deadline
+      def self.now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      def initialize(duration)
+        @duration = duration
+        @expires_at = self.class.now + duration
+      end
+
+      def check!
+        raise DeadlineExceeded, "time limit (#{@duration.to_i}s) reached" if self.class.now >= @expires_at
+      end
+    end
+
+    Limits = Data.define(:pages, :entries, :duration, :deadline) do
+      def initialize(deadline: nil, **members) = super
+
+      def exceeded(pages:, entries:)
+        return "page limit (#{self.pages}) reached" if pages >= self.pages
+
+        "entry limit (#{self.entries}) reached" if entries >= self.entries
       end
     end
 
@@ -44,10 +60,13 @@ module Bouncy
       # the list was read to the end. An adapter that can page overrides this to keep only one
       # page in memory and to honour the limits; this default reads the whole snapshot and
       # yields it as one page, as 0.2.2 did.
-      def scan(_limits = nil)
+      def scan(limits = nil)
+        limits&.deadline&.check!
         snapshot = self.snapshot
+        limits&.deadline&.check!
         yield Page.new(entries: snapshot.entries, scope: snapshot.scope, authoritative: snapshot.complete,
                        policy_verified: snapshot.policy_verified, observed_at: snapshot.finished_at)
+        limits&.deadline&.check!
         snapshot
       end
     end

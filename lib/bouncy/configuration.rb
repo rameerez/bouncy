@@ -51,10 +51,9 @@ module Bouncy
     # :strict when require_fresh_sync is false, because then nothing reads the account list.
     #
     # sync_max_pages, sync_max_entries and sync_max_duration bound the work of one provider
-    # scan (a sync, or the list read of a provider release). A scan that reaches any of them
-    # stops and is recorded incomplete: the entries it read still add restrictions, but no
-    # restriction is cleared for being absent, and a release refuses to run. Memory holds one
-    # page of 1,000 entries plus a few bytes per address.
+    # scan and reconciliation (or the list read of a provider release). An incomplete sync
+    # keeps additions and rolls back absence-based releases. Memory grows with local rows and
+    # listed addresses, plus a page of up to 1,000 entries. In-flight operations can overshoot.
     attr_writer :webhook_blocking
     attr_accessor :provider, :scope, :interception, :record_deliveries,
                   :retention, :maximum_event_age, :stale_after, :after_block, :after_release,

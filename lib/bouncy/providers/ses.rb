@@ -45,12 +45,15 @@ module Bouncy
       # so memory holds one page, never the list. Stops, incomplete, at the first limit reached.
       def scan(limits = @configuration.sync_limits)
         started_at = Time.current
+        deadline = limits.deadline || Deadline.new(limits.duration)
         policy = policy_check
+        deadline.check!
         tokens = Set.new
         token = nil
         pages = count = 0
         stopped = nil
         loop do
+          deadline.check!
           response = request { client.list_suppressed_destinations(page_size: PAGE_SIZE, next_token: token) }
           pages += 1
           entries = response.suppressed_destination_summaries.map do |row|
@@ -60,13 +63,17 @@ module Bouncy
           count += entries.size
           yield Page.new(entries: entries, scope: @configuration.scope, authoritative: true,
                          policy_verified: policy.verified, observed_at: Time.current)
+          deadline.check!
           token = response.next_token
           break if token.nil? || token.empty?
           raise ProviderError, "SES repeated a pagination token" unless tokens.add?(token)
-          break if (stopped = limits.exceeded(pages: pages, entries: count, started_at: started_at))
+          break if (stopped = limits.exceeded(pages: pages, entries: count))
         end
         Snapshot.new(entries: [], scope: @configuration.scope, complete: stopped.nil?, policy_verified: policy.verified,
                      policy_reason: policy.reason, incomplete_reason: stopped, started_at: started_at, finished_at: Time.current)
+      rescue DeadlineExceeded => e
+        Snapshot.new(entries: [], scope: @configuration.scope, complete: false, policy_verified: policy&.verified,
+                     policy_reason: policy&.reason, incomplete_reason: e.message, started_at: started_at, finished_at: Time.current)
       end
 
       def lookup(email)

@@ -25,31 +25,50 @@ module Bouncy
     # check for one run, never clear a restriction.
     def reconcile
       started_at = Time.current
+      deadline = Providers::Deadline.new(Bouncy.configuration.sync_max_duration)
       versions = {}
       Suppression.where(scope: Bouncy.scope).in_batches(of: 10_000) do |batch|
-        batch.pluck(:email, :lock_version).each { |email, version| versions[email.hash] = version }
+        deadline.check!
+        batch.pluck(:email, :lock_version).each do |email, version|
+          deadline.check!
+          versions[email.hash] = version
+        end
       end
       listed = Set.new
       counts = Hash.new(0)
       total = 0
-      snapshot = @adapter.scan(Bouncy.configuration.sync_limits) do |page|
+      deadline.check!
+      limits = Bouncy.configuration.sync_limits.with(deadline: deadline)
+      snapshot = @adapter.scan(limits) do |page|
         raise UnsafeSnapshot, "Provider returned a different scope" unless page.scope == Bouncy.scope
 
+        deadline.check!
         total += page.entries.size
         page.entries.group_by { |entry| Identity.normalize(entry.email) }.each do |email, entries|
+          deadline.check!
           listed << email.hash
           counts[apply_listed(email, entries, page, versions, started_at)] += 1
         end
       end
+      deadline.check! if snapshot.complete
       raise UnsafeSnapshot, "Provider returned a different scope" unless snapshot.scope == Bouncy.scope
 
       # Only a list read to its end, under a verified policy, can show that an address is gone.
       if snapshot.complete && snapshot.policy_verified
-        Suppression.where(scope: Bouncy.scope).find_each do |row|
-          next if listed.include?(row.email.hash) || !unchanged?(row, versions, started_at)
+        # All absence changes roll back if the deadline expires during the pass. This keeps a
+        # timed-out sync add-only even if it had already checked some absent addresses.
+        absence_counts = Hash.new(0)
+        Suppression.transaction(requires_new: true) do
+          Suppression.where(scope: Bouncy.scope).find_each do |row|
+            deadline.check!
+            next if listed.include?(row.email.hash) || !unchanged?(row, versions, started_at)
 
-          counts[check_absence(row, snapshot)] += 1
+            absence_counts[check_absence(row, snapshot)] += 1
+            deadline.check!
+          end
+          deadline.check!
         end
+        absence_counts.each { |kind, count| counts[kind] += count }
       end
       if snapshot.incomplete_reason
         Rails.logger&.warn("[bouncy] sync stopped before the end of the provider list: #{snapshot.incomplete_reason}; " \
@@ -62,6 +81,12 @@ module Bouncy
                   "started_at" => started_at.iso8601(6), "finished_at" => Time.current.iso8601(6) }
       details["incomplete_reason"] = snapshot.incomplete_reason if snapshot.incomplete_reason
       Store.event!("sync", source: "sync", details: details)
+    rescue Providers::DeadlineExceeded => e
+      Rails.logger&.warn("[bouncy] sync exceeded its deadline: #{e.message}; no absence restriction was cleared")
+      Store.event!("sync", source: "sync", details: { "complete" => false, "enumerated" => !!snapshot&.complete,
+                                                      "policy_verified" => snapshot&.policy_verified, "incomplete_reason" => e.message,
+                                                      "entries" => total || 0, "added" => counts&.[](:added).to_i, "released" => 0,
+                                                      "started_at" => started_at.iso8601(6), "finished_at" => Time.current.iso8601(6) })
     rescue ProviderError => e
       Store.event!("sync", source: "sync", details: { "complete" => false, "error_class" => e.class.name })
       raise

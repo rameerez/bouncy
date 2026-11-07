@@ -49,7 +49,10 @@ class SyncLimitsTest < BouncyTest
     Bouncy.configuration.sync_max_duration = 5.minutes
     @ses.api_requests.clear
     pages
-    snapshot = Bouncy::Providers::Ses.new.scan(Bouncy.configuration.sync_limits) { |_page| travel 3.minutes }
+    clock = 0
+    snapshot = Bouncy::Providers::Deadline.stub(:now, -> { clock }) do
+      Bouncy::Providers::Ses.new.scan(Bouncy.configuration.sync_limits) { |_page| clock += 3.minutes }
+    end
     refute snapshot.complete
     assert_match(/time limit \(300s\)/, snapshot.incomplete_reason)
     assert_equal 2, list_requests.size, "the third page is never requested"
@@ -120,6 +123,54 @@ class SyncLimitsTest < BouncyTest
                         ])
     assert_raises(Bouncy::UnsafeSnapshot) { Bouncy.release!("ada@example.com", note: "again", actor: "support") }
     assert(@ses.api_requests.none? { |request| request[:operation_name] == :delete_suppressed_destination })
+  end
+
+  test "a final page that exceeds the deadline is incomplete" do
+    clock = 0
+    Bouncy.configuration.sync_max_duration = 5.seconds
+    @ses.stub_responses(:list_suppressed_destinations, suppressed_destination_summaries: [summary("a@example.com")])
+    result = Bouncy::Providers::Deadline.stub(:now, -> { clock }) do
+      Bouncy::Providers::Ses.new.scan(Bouncy.configuration.sync_limits) { |_page| clock = 6 }
+    end
+    refute result.complete
+    assert_match(/time limit/, result.incomplete_reason)
+  end
+
+  test "deadline during absence reconciliation rolls back all releases" do
+    Bouncy.configuration.adapter = @provider
+    Bouncy.configuration.sync_max_duration = 5.seconds
+    2.times do |index|
+      email = "gone#{index}@example.com"
+      row = Bouncy::Suppression.create!(scope: Bouncy.scope, email: email, provider: "ses",
+                                        provider_entries: [{ "email" => email, "reason" => "hard_bounce", "provider_updated_at" => 2.days.ago.iso8601(6) }],
+                                        provider_blocked_at: 2.days.ago, provider_reason: "hard_bounce")
+      row.summarize!
+    end
+    clock = 0
+    lookups = 0
+    lookup = lambda do |_email|
+      lookups += 1
+      clock = 6 if lookups == 2
+      :absent
+    end
+    Bouncy::Providers::Deadline.stub(:now, -> { clock }) do
+      @provider.stub(:lookup, lookup) { Bouncy.sync! }
+    end
+    assert_equal 2, lookups
+    refute Bouncy.last_sync.details["complete"]
+    assert Bouncy.last_sync.details["enumerated"]
+    assert_equal 0, Bouncy.last_sync.details["released"]
+    assert Bouncy.blocked?("gone0@example.com")
+    assert Bouncy.blocked?("gone1@example.com")
+    assert_empty Bouncy.events.where(kind: "sync_released")
+  end
+
+  test "deadline during the initial local scan records an incomplete sync" do
+    Bouncy.configuration.sync_max_duration = 5.seconds
+    times = [0, 6]
+    Bouncy::Providers::Deadline.stub(:now, -> { times.shift || 6 }) { Bouncy.sync! }
+    refute Bouncy.last_sync.details["complete"]
+    assert_match(/time limit/, Bouncy.last_sync.details["incomplete_reason"])
   end
 
   test "the limits must be positive" do
